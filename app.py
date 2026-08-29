@@ -2,7 +2,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Flask, g, jsonify, render_template
+from flask import Flask, g, jsonify, render_template, request
 
 DB_PATH = Path(__file__).parent / "omw.db"
 
@@ -63,6 +63,17 @@ def init_db():
         """
     )
 
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            resource_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
     columns = {row[1] for row in db.execute("PRAGMA table_info(resources)")}
     if "status" not in columns:
         db.execute(
@@ -111,6 +122,32 @@ def resources():
         "SELECT id, name, kind, lat, lng, status, last_report FROM resources"
     ).fetchall()
     return jsonify([dict(row) for row in rows])
+
+
+@app.route("/api/resources/<int:resource_id>/report", methods=["POST"])
+def report(resource_id):
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    if status not in ("available", "unavailable"):
+        return jsonify({"error": "invalid status"}), 400
+
+    db = get_db()
+    if db.execute(
+        "SELECT 1 FROM resources WHERE id = ?", (resource_id,)
+    ).fetchone() is None:
+        return jsonify({"error": "not found"}), 404
+
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO reports (resource_id, status, created_at) VALUES (?, ?, ?)",
+        (resource_id, status, now),
+    )
+    db.execute(
+        "UPDATE resources SET status = ?, last_report = ? WHERE id = ?",
+        (status, now, resource_id),
+    )
+    db.commit()
+    return jsonify({"status": status, "last_report": now})
 
 
 init_db()

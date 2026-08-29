@@ -25,6 +25,12 @@
       <span id="panel-status" class="text-sm font-medium"></span>
     </div>
     <p id="panel-reported" class="mt-1 text-sm text-gray-500"></p>
+    <div class="mt-4 flex gap-2">
+      <button id="btn-available"
+              class="flex-1 rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-700">It's available</button>
+      <button id="btn-out"
+              class="flex-1 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700">It's out</button>
+    </div>
   </div>
 
   <script>
@@ -81,7 +87,12 @@
       panel.classList.add("hidden");
     });
 
-    function showPanel(res) {
+    let currentRes = null;
+    let currentMarker = null;
+
+    function showPanel(res, marker) {
+      currentRes = res;
+      currentMarker = marker;
       const status = STATUS_COLORS[res.status] ? res.status : "unknown";
       document.getElementById("panel-name").textContent = res.name;
       document.getElementById("panel-kind").textContent = res.kind;
@@ -103,20 +114,43 @@
       panel.classList.remove("hidden");
     }
 
+    function sendReport(status) {
+      if (!currentRes) return;
+      const res = currentRes;
+      const marker = currentMarker;
+      fetch(`/api/resources/${res.id}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          res.status = data.status;
+          res.last_report = data.last_report;
+          const color = STATUS_COLORS[data.status] || STATUS_COLORS.unknown;
+          if (marker) marker.setStyle({ fillColor: color });
+          if (currentRes === res) showPanel(res, marker);
+        });
+    }
+
+    document.getElementById("btn-available")
+      .addEventListener("click", () => sendReport("available"));
+    document.getElementById("btn-out")
+      .addEventListener("click", () => sendReport("unavailable"));
+
     fetch("/api/resources")
       .then((r) => r.json())
       .then((resources) => {
         resources.forEach((res) => {
           const color = STATUS_COLORS[res.status] || STATUS_COLORS.unknown;
-          L.circleMarker([res.lat, res.lng], {
+          const marker = L.circleMarker([res.lat, res.lng], {
             radius: 9,
             color: "#ffffff",
             weight: 2,
             fillColor: color,
             fillOpacity: 0.9,
-          })
-            .addTo(map)
-            .on("click", () => showPanel(res));
+          }).addTo(map);
+          marker.on("click", () => showPanel(res, marker));
         });
       });
   </script>
