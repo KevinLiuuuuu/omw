@@ -1,25 +1,28 @@
 """Optional Gemini vision helper: guess how full a pantry's shelves are from a photo.
 
 One public function, ``estimate_capacity(image_bytes)``, which returns a dict with
-``perishables_pct`` / ``non_perishables_pct`` / ``toiletries_pct`` (each 0-100 or
-None if that category isn't visible) and ``confidence`` (0.0-1.0).
+``perishables_pct`` / ``non_perishables_pct`` / ``toiletries_pct`` (each a 0-100
+int) or ``None`` if the estimate could not be produced.
 
-This is a pre-fill convenience for the capacity sliders, nothing more. Callers are
-expected to catch exceptions and fall back to manual entry.
+This is a pre-fill convenience for the capacity sliders, nothing more. It never
+raises: every failure path returns ``None`` so the sliders stay manual.
 """
 
 import io
+import json
+import logging
 import os
 
 from google import genai
 from google.genai import types
 from PIL import Image
-from pydantic import BaseModel, Field
 
 # Current recommended multimodal Flash model (verified against
 # ai.google.dev/gemini-api/docs/models, 2026-08). Swap to "gemini-2.5-flash" if
 # 3.7 isn't available on the account.
-MODEL = "gemini-3.7-flash"
+MODEL = "gemini-3.6-flash"
+
+_log = logging.getLogger(__name__)
 
 # Hard ceiling on the request. HttpOptions.timeout is in milliseconds. The Flask
 # endpoint also bounds the call independently in case the SDK's own timeout slips.
@@ -34,26 +37,29 @@ _PROMPT = (
     "100 (completely stocked): perishables (fresh/refrigerated food), "
     "non-perishables (canned and dry goods), and toiletries (hygiene products). "
     "If a category is not visible in the frame, return null for it. Also return "
-    "your overall confidence in the estimate from 0.0 to 1.0."
+    "your overall confidence in the estimate from 0.0 to 1.0. "
+    "Return only the JSON object. No prose, no markdown fences."
 )
 
+# Plain JSON-schema dict rather than a Pydantic class: passing a Pydantic model as
+# response_schema makes the SDK introspect it as a callable tool, which trips
+# automatic function calling and silently drops response_mime_type, so the model
+# never actually enters JSON mode.
+_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "perishables": {"type": "integer", "minimum": 0, "maximum": 100},
+        "non_perishables": {"type": "integer", "minimum": 0, "maximum": 100},
+        "toiletries": {"type": "integer", "minimum": 0, "maximum": 100},
+    },
+    "required": ["perishables", "non_perishables", "toiletries"],
+}
 
-class CapacityEstimate(BaseModel):
-    perishables_pct: int | None = Field(
-        description="Fullness of the perishable/fresh-food shelves, 0-100, or null "
-        "if not visible"
-    )
-    non_perishables_pct: int | None = Field(
-        description="Fullness of the canned/dry-goods shelves, 0-100, or null if "
-        "not visible"
-    )
-    toiletries_pct: int | None = Field(
-        description="Fullness of the toiletries/hygiene shelves, 0-100, or null if "
-        "not visible"
-    )
-    confidence: float = Field(
-        description="Overall confidence in this estimate, 0.0-1.0"
-    )
+_CATEGORIES = (
+    ("perishables", "perishables_pct"),
+    ("non_perishables", "non_perishables_pct"),
+    ("toiletries", "toiletries_pct"),
+)
 
 
 def _preprocess(image_bytes: bytes, max_dim: int = 512, quality: int = 70) -> bytes:
@@ -67,47 +73,126 @@ def _preprocess(image_bytes: bytes, max_dim: int = 512, quality: int = 70) -> by
     return buffer.getvalue()
 
 
-def _clamp_pct(value):
-    if value is None:
+def _loads_loose(text):
+    """Best-effort JSON parse of a model reply that may carry prose or fences."""
+    if not text:
         return None
-    return max(0, min(100, int(value)))
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped[3:]
+    if stripped.endswith("```"):
+        stripped = stripped[:-3]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        return None
+    try:
+        return json.loads(stripped[start : end + 1])
+    except (ValueError, TypeError):
+        return None
 
 
-def estimate_capacity(image_bytes: bytes) -> dict:
+def _coerce_estimate(data):
+    """Turn a raw dict into {..._pct: int 0-100}, or None if a category is missing."""
+    if not isinstance(data, dict):
+        return None
+    out = {}
+    for src, dst in _CATEGORIES:
+        if src not in data or data[src] is None:
+            return None
+        try:
+            out[dst] = max(0, min(100, int(data[src])))
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
+def _parse_response(response):
+    """Pull a usable estimate out of ``response`` -- parsed dict first, then text."""
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict):
+        result = _coerce_estimate(parsed)
+        if result is not None:
+            return result
+    return _coerce_estimate(_loads_loose(getattr(response, "text", None)))
+
+
+def estimate_capacity(image_bytes: bytes):
     """Ask Gemini to estimate shelf fullness from ``image_bytes``.
 
     Returns a dict with perishables_pct / non_perishables_pct / toiletries_pct
-    (0-100 or None) and confidence (0.0-1.0). Raises on a missing API key, a
-    bad image, or any API failure -- the caller handles the fallback.
+    (each a 0-100 int), or ``None`` on any failure -- missing key, bad image, API
+    error, truncated or unparseable reply. Never raises.
     """
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not set")
+    try:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            _log.warning("GEMINI_API_KEY is not set; skipping photo estimate")
+            return None
 
-    optimized = _preprocess(image_bytes)
+        optimized = _preprocess(image_bytes)
 
-    client = genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(timeout=TIMEOUT_MS),
-    )
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=[
-            types.Part.from_bytes(data=optimized, mime_type="image/jpeg"),
-            _PROMPT,
-        ],
-        config=types.GenerateContentConfig(
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=TIMEOUT_MS),
+        )
+
+        config_kwargs = dict(
             response_mime_type="application/json",
-            response_schema=CapacityEstimate,
+            response_schema=_RESPONSE_SCHEMA,
             temperature=0.0,
-            max_output_tokens=300,
-        ),
-    )
+            max_output_tokens=2048,
+            tools=None,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
+        )
 
-    estimate: CapacityEstimate = response.parsed
-    return {
-        "perishables_pct": _clamp_pct(estimate.perishables_pct),
-        "non_perishables_pct": _clamp_pct(estimate.non_perishables_pct),
-        "toiletries_pct": _clamp_pct(estimate.toiletries_pct),
-        "confidence": max(0.0, min(1.0, float(estimate.confidence))),
-    }
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[
+                types.Part.from_bytes(data=optimized, mime_type="image/jpeg"),
+                _PROMPT,
+            ],
+            config=types.GenerateContentConfig(**config_kwargs),
+        )
+
+        try:
+            finish_reason = response.candidates[0].finish_reason
+        except (AttributeError, IndexError, TypeError):
+            finish_reason = None
+        _log.info("Gemini estimate finish_reason=%s", finish_reason)
+
+        try:
+            usage_metadata = getattr(response, "usage_metadata", None)
+        except (AttributeError, TypeError):
+            usage_metadata = None
+        _log.info("Gemini estimate usage_metadata=%s", usage_metadata)
+
+        result = _parse_response(response)
+        if result is None:
+            _log.error(
+                "Gemini estimate did not parse; raw text: %r",
+                getattr(response, "text", None),
+            )
+        return result
+    except Exception:
+        _log.exception("photo capacity estimate failed")
+        return None
+
+
+if __name__ == "__main__":
+    import sys
+    import time
+
+    logging.basicConfig(level=logging.INFO)
+
+    with open(sys.argv[1], "rb") as fh:
+        data = fh.read()
+
+    started = time.monotonic()
+    outcome = estimate_capacity(data)
+    elapsed = time.monotonic() - started
+
+    print(f"result:  {outcome}")
+    print(f"elapsed: {elapsed:.1f}s")

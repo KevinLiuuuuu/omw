@@ -612,10 +612,11 @@ def estimate():
     """Guess per-category shelf fullness from an uploaded photo.
 
     Body: multipart/form-data with an "image" file. Returns
-    {"perishables_pct", "non_perishables_pct", "toiletries_pct", "confidence"}
-    on success. Any failure (no key, bad image, timeout, API error) returns 503
-    with {"error": "unavailable"} -- the frontend treats that as "fall back to
-    the manual sliders" and shows nothing.
+    {"perishables_pct", "non_perishables_pct", "toiletries_pct"} with 200 on
+    success. If the estimate could not be produced, returns 204 with an empty
+    body. Any failure (no key, bad image, timeout, API error) returns 503 with
+    {"error": "unavailable"}. The frontend treats anything but a 200 as "fall
+    back to the manual sliders" and shows nothing.
     """
     upload = request.files.get("image")
     if upload is None or not upload.filename:
@@ -638,6 +639,8 @@ def estimate():
         app.logger.exception("photo capacity estimate failed")
         return jsonify({"error": "unavailable"}), 503
 
+    if result is None:
+        return "", 204
     return jsonify(result)
 
 

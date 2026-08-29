@@ -945,10 +945,10 @@ fill="currentColor" stroke="none">
     }
 
     // Optional and non-blocking: the sliders are already open and editable. Hand
-    // the photo to /api/estimate in the background and, if it comes back
-    // confident, move the sliders the user hasn't touched yet to its guesses.
-    // Any failure — no key, timeout, error, low confidence — just drops the
-    // indicator and leaves the sliders alone.
+    // the photo to /api/estimate in the background and, if it comes back with a
+    // usable estimate, move the sliders the user hasn't touched yet to its
+    // guesses. Any failure — no key, timeout, error, unparseable body — just
+    // drops the indicator and leaves the sliders alone.
     async function prefillFromPhoto(file, touchedSliders) {
       const photoBtn = detailBody.querySelector("[data-photo]");
       const checking = detailBody.querySelector("[data-photo-checking]");
@@ -960,19 +960,28 @@ fill="currentColor" stroke="none">
         const fd = new FormData();
         fd.append("image", file);
         const resp = await fetch("/api/estimate", { method: "POST", body: fd });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        if (resp.status !== 200) return;
         const data = await resp.json();
-        if (!(data.confidence >= 0.5)) throw new Error("low confidence");
 
-        CATEGORIES.forEach(([field]) => {
-          const value = data[`${field}_pct`];
-          if (value == null) return;
-          if (touchedSliders.has(field)) return;
+        const vals = {};
+        for (const [field] of CATEGORIES) vals[field] = data[`${field}_pct`];
+        // Missing key -> undefined -> not finite; non-number -> not finite.
+        if (!Object.values(vals).every((v) => Number.isFinite(v))) return;
+
+        // Snapshot which sliders are still untouched *before* applying anything.
+        const untouched = CATEGORIES
+          .map(([field]) => field)
+          .filter((field) => !touchedSliders.has(field));
+
+        untouched.forEach((field) => {
           const slider = detailBody.querySelector(`[data-slider="${field}"]`);
-          const out = detailBody.querySelector(`[data-out="${field}"]`);
           if (!slider) return;
-          slider.value = value;
-          out.textContent = String(value);
+          slider.value = vals[field];
+          // Drive the existing listener so the % readout updates, then undo the
+          // "touched" mark it sets — a programmatic prefill isn't a user drag,
+          // so a later photo can still refine this slider.
+          slider.dispatchEvent(new Event("input", { bubbles: true }));
+          touchedSliders.delete(field);
         });
         note.textContent =
           "These are an estimate from your photo — check each slider, then Submit.";
