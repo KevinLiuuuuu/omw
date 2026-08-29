@@ -641,7 +641,16 @@ def estimate():
 
     if result is None:
         return "", 204
-    return jsonify(result)
+
+    payload = {
+        "perishables_pct": result["perishables_pct"],
+        "non_perishables_pct": result["non_perishables_pct"],
+        "toiletries_pct": result["toiletries_pct"],
+    }
+    description = result.get("description")
+    if isinstance(description, str) and description:
+        payload["description"] = description
+    return jsonify(payload)
 
 
 init_db()

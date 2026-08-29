@@ -256,6 +256,20 @@
       0%, 100% { transform: translateY(0); }
       50%      { transform: translateY(-4px); }
     }
+
+    /* "Checking photo" trailing dots: three sky-blue dots that pulse in
+       sequence while the background estimate request is in flight. Pure
+       CSS, staggered via animation-delay — no JS timers. */
+    .photo-dots span {
+      color: var(--omw-accent);
+      animation: photo-dot-pulse 1.2s ease-in-out infinite;
+    }
+    .photo-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .photo-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes photo-dot-pulse {
+      0%, 100% { opacity: 0.25; }
+      50%      { opacity: 1; }
+    }
 </style>
 </head>
 <body>
@@ -890,7 +904,8 @@ fill="currentColor" stroke="none">
       parts.push(
         `<button data-photo type="button" class="mt-3 w-full">Use a photo</button>
          <input data-photo-input type="file" accept="image/*" capture="environment" class="hidden">
-         <p data-photo-checking class="mt-2 hidden text-xs text-gray-500">Checking photo…</p>
+         <p data-photo-checking class="mt-2 hidden text-xs text-gray-500">Checking photo<span class="photo-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></p>
+         <p data-photo-desc class="mt-2 hidden text-xs italic text-gray-500"></p>
          <p data-photo-note class="mt-2 hidden text-xs text-gray-500"></p>`
       );
       CATEGORIES.forEach(([field, label]) => {
@@ -953,15 +968,23 @@ fill="currentColor" stroke="none">
       const photoBtn = detailBody.querySelector("[data-photo]");
       const checking = detailBody.querySelector("[data-photo-checking]");
       const note = detailBody.querySelector("[data-photo-note]");
+      const desc = detailBody.querySelector("[data-photo-desc]");
       photoBtn.disabled = true;
       checking.classList.remove("hidden");
       note.classList.add("hidden");
+      desc.classList.add("hidden");
+      desc.textContent = "";
       try {
         const fd = new FormData();
         fd.append("image", file);
         const resp = await fetch("/api/estimate", { method: "POST", body: fd });
         if (resp.status !== 200) return;
         const data = await resp.json();
+
+        if (typeof data.description === "string" && data.description.trim()) {
+          desc.textContent = `Photo shows: ${data.description.trim()}`;
+          desc.classList.remove("hidden");
+        }
 
         const vals = {};
         for (const [field] of CATEGORIES) vals[field] = data[`${field}_pct`];
