@@ -891,7 +891,8 @@ fill="currentColor" stroke="none">
         `<button data-photo type="button" class="mt-3 w-full">Use a photo</button>
          <input data-photo-input type="file" accept="image/*" capture="environment" class="hidden">
          <p data-photo-checking class="mt-2 hidden text-xs text-gray-500">Checking photo…</p>
-         <p data-photo-note class="mt-2 hidden text-xs text-gray-500"></p>`
+         <p data-photo-note class="mt-2 hidden text-xs text-gray-500"></p>
+         <p data-photo-offline class="mt-2 hidden text-xs text-gray-500"></p>`
       );
       CATEGORIES.forEach(([field, label]) => {
         const current = res[`${field}_pct`];
@@ -953,9 +954,11 @@ fill="currentColor" stroke="none">
       const photoBtn = detailBody.querySelector("[data-photo]");
       const checking = detailBody.querySelector("[data-photo-checking]");
       const note = detailBody.querySelector("[data-photo-note]");
+      const offline = detailBody.querySelector("[data-photo-offline]");
       photoBtn.disabled = true;
       checking.classList.remove("hidden");
       note.classList.add("hidden");
+      offline.classList.add("hidden");
       try {
         const fd = new FormData();
         fd.append("image", file);
@@ -986,6 +989,17 @@ fill="currentColor" stroke="none">
         note.textContent =
           "These are an estimate from your photo — check each slider, then Submit.";
         note.classList.remove("hidden");
+
+        // A local estimate is a single item-count spread across all three
+        // sliders — not a real per-category read. Say so, plainly.
+        if (data.source === "local") {
+          offline.textContent =
+            "Offline estimate — please check each category.";
+          offline.classList.remove("hidden");
+        } else {
+          offline.textContent = "";
+          offline.classList.add("hidden");
+        }
       } catch (e) {
         // Silent fallback: leave the sliders as they were.
       } finally {
