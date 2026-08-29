@@ -268,6 +268,21 @@ def init_db():
         """
     )
 
+    # One row per submitted "Update info" report: the raw slider values a person
+    # entered, before they are blended into the resource's running estimate.
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS capacity_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            resource_id INTEGER NOT NULL,
+            perishables REAL NOT NULL,
+            non_perishables REAL NOT NULL,
+            toiletries REAL NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
     columns = {row[1] for row in db.execute("PRAGMA table_info(resources)")}
     if "status" not in columns:
         db.execute(
@@ -461,6 +476,100 @@ def report(resource_id):
     )
     db.commit()
     return jsonify({"status": status, "last_report": now, "confidence": 1.0})
+
+
+CAPACITY_CATEGORIES = ("perishables", "non_perishables", "toiletries")
+
+
+@app.route("/api/resources/<int:resource_id>/capacity", methods=["POST"])
+def capacity_report(resource_id):
+    """Fold a fresh per-category fill-level report into the running estimate.
+
+    Body: {"perishables": 0-100, "non_perishables": 0-100, "toiletries": 0-100}.
+    Each new value is blended with the stored estimate, weighting the old value by
+    its current confidence (confidence.py), so a stale estimate is almost fully
+    replaced and a fresh one only shifts halfway.
+    """
+    data = request.get_json(silent=True) or {}
+    new_values = {}
+    for cat in CAPACITY_CATEGORIES:
+        value = data.get(cat)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return jsonify({"error": f"invalid {cat}"}), 400
+        if not 0 <= value <= 100:
+            return jsonify({"error": f"{cat} out of range"}), 400
+        new_values[cat] = float(value)
+
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT kind,
+               perishables_pct, perishables_reported,
+               non_perishables_pct, non_perishables_reported,
+               toiletries_pct, toiletries_reported
+        FROM resources WHERE id = ?
+        """,
+        (resource_id,),
+    ).fetchone()
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+
+    blended = {}
+    for cat in CAPACITY_CATEGORIES:
+        old_value = row[f"{cat}_pct"]
+        reported = row[f"{cat}_reported"]
+        old_confidence = 0.0
+        if old_value is not None and reported:
+            reported_at = datetime.fromisoformat(reported)
+            if reported_at.tzinfo is None:
+                reported_at = reported_at.replace(tzinfo=timezone.utc)
+            age = (now - reported_at).total_seconds()
+            old_confidence = confidence.confidence(row["kind"], age)
+        blended[cat] = round(
+            confidence.blend(old_value, old_confidence, new_values[cat]), 1
+        )
+
+    db.execute(
+        """
+        INSERT INTO capacity_reports
+            (resource_id, perishables, non_perishables, toiletries, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            resource_id,
+            new_values["perishables"],
+            new_values["non_perishables"],
+            new_values["toiletries"],
+            now_iso,
+        ),
+    )
+    db.execute(
+        """
+        UPDATE resources SET
+            perishables_pct = ?, perishables_reported = ?,
+            non_perishables_pct = ?, non_perishables_reported = ?,
+            toiletries_pct = ?, toiletries_reported = ?
+        WHERE id = ?
+        """,
+        (
+            blended["perishables"], now_iso,
+            blended["non_perishables"], now_iso,
+            blended["toiletries"], now_iso,
+            resource_id,
+        ),
+    )
+    db.commit()
+
+    response = {"overall_capacity": capacity.overall_capacity(
+        blended["perishables"], blended["non_perishables"], blended["toiletries"]
+    )}
+    for cat in CAPACITY_CATEGORIES:
+        response[f"{cat}_pct"] = blended[cat]
+        response[f"{cat}_reported"] = now_iso
+    return jsonify(response)
 
 
 init_db()
