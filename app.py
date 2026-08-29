@@ -4,6 +4,8 @@ from pathlib import Path
 
 from flask import Flask, g, jsonify, render_template, request
 
+import confidence
+
 DB_PATH = Path(__file__).parent / "omw.db"
 
 SEED_RESOURCES = [
@@ -111,6 +113,21 @@ def init_db():
     db.close()
 
 
+def report_confidence(kind, status, last_report, now):
+    """Confidence in a resource's current status, in [0.0, 1.0].
+
+    Zero when there is no report or the status is unknown; otherwise the report's
+    age is decayed at the rate for its kind (see confidence.py).
+    """
+    if status == "unknown" or not last_report:
+        return 0.0
+    reported_at = datetime.fromisoformat(last_report)
+    if reported_at.tzinfo is None:
+        reported_at = reported_at.replace(tzinfo=timezone.utc)
+    age = (now - reported_at).total_seconds()
+    return round(confidence.confidence(kind, age), 3)
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -121,7 +138,15 @@ def resources():
     rows = get_db().execute(
         "SELECT id, name, kind, lat, lng, status, last_report FROM resources"
     ).fetchall()
-    return jsonify([dict(row) for row in rows])
+    now = datetime.now(timezone.utc)
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["confidence"] = report_confidence(
+            item["kind"], item["status"], item["last_report"], now
+        )
+        result.append(item)
+    return jsonify(result)
 
 
 @app.route("/api/resources/<int:resource_id>/report", methods=["POST"])
@@ -147,7 +172,7 @@ def report(resource_id):
         (status, now, resource_id),
     )
     db.commit()
-    return jsonify({"status": status, "last_report": now})
+    return jsonify({"status": status, "last_report": now, "confidence": 1.0})
 
 
 init_db()
