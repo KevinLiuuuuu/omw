@@ -23,7 +23,9 @@ MODEL = "gemini-3.7-flash"
 
 # Hard ceiling on the request. HttpOptions.timeout is in milliseconds. The Flask
 # endpoint also bounds the call independently in case the SDK's own timeout slips.
-TIMEOUT_MS = 8000
+# The API rejects any deadline under 10s ("Minimum allowed deadline is 10s"), so
+# keep this above that floor.
+TIMEOUT_MS = 12000
 
 _PROMPT = (
     "This is a photo of shelves at a community food bank. Estimate how full the "

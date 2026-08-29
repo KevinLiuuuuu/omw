@@ -598,9 +598,10 @@ def capacity_report(resource_id):
     return jsonify(response)
 
 
-# The vision call is bounded to 8s. Run it off the request thread so a slow or
-# hanging API call can't tie up the worker past that deadline.
-ESTIMATE_TIMEOUT_SECONDS = 8
+# The vision call bounds itself to vision.TIMEOUT_MS (12s). Run it off the request
+# thread and give the outer wait a slightly longer deadline, so the wrapper never
+# cuts the thread off mid-call.
+ESTIMATE_TIMEOUT_SECONDS = 14
 _vision_pool = ThreadPoolExecutor(max_workers=2)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
@@ -630,8 +631,10 @@ def estimate():
         result = future.result(timeout=ESTIMATE_TIMEOUT_SECONDS)
     except FutureTimeoutError:
         future.cancel()
+        app.logger.exception("photo capacity estimate timed out")
         return jsonify({"error": "unavailable"}), 503
     except Exception:
+        app.logger.exception("photo capacity estimate failed")
         return jsonify({"error": "unavailable"}), 503
 
     return jsonify(result)
