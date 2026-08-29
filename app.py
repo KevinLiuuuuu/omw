@@ -1,12 +1,19 @@
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import Flask, g, jsonify, render_template, request
 
+import capacity
 import confidence
+import openhours
 
 DB_PATH = Path(__file__).parent / "omw.db"
+
+# Opening hours and is_open_now are reckoned in the resources' local time.
+SYDNEY_TZ = ZoneInfo("Australia/Sydney")
 
 SEED_RESOURCES = [
     ("Wayside Chapel Shelter", "shelter", -33.8769, 151.2223),
@@ -31,6 +38,91 @@ SEED_STATUS = {
     "Town Hall Square Free WiFi": ("available", 5),
     "Customs House Library WiFi": ("unknown", None),
 }
+
+# Eight inner-Sydney food banks, seeded alongside SEED_RESOURCES (all kind
+# "pantry"). Each carries opening hours (per weekday, a list of [open, close]
+# "HH:MM" pairs; a missing day means closed), two facility flags, and a starting
+# fill level per stock category as (percent, minutes_since_reported) - turned
+# into a timestamp at seed time.
+_MON_FRI = ("mon", "tue", "wed", "thu", "fri")
+
+SEED_FOODBANKS = [
+    {
+        "name": "OzHarvest Waterloo",
+        "lat": -33.9018, "lng": 151.2050,
+        "hours": {d: [["09:00", "15:00"]] for d in _MON_FRI},
+        "free_wifi": True, "bathroom": True,
+        "perishables": (48, 25),
+        "non_perishables": (74, 200),
+        "toiletries": (60, 120),
+    },
+    {
+        "name": "Addison Road Food Pantry",
+        "lat": -33.9098, "lng": 151.1585,
+        "hours": {"wed": [["10:00", "13:00"]], "sat": [["10:00", "13:00"]]},
+        "free_wifi": False, "bathroom": True,
+        "perishables": (35, 60),
+        "non_perishables": (58, 600),
+        "toiletries": (40, 300),
+    },
+    {
+        "name": "Exodus Foundation Loaves & Fishes",
+        "lat": -33.8885, "lng": 151.1250,
+        "hours": {d: [["08:00", "11:30"], ["12:00", "14:00"]] for d in _MON_FRI},
+        "free_wifi": False, "bathroom": True,
+        "perishables": (55, 15),
+        "non_perishables": (80, 90),
+        "toiletries": (65, 240),
+    },
+    {
+        "name": "Vinnies Woolloomooloo Pantry",
+        "lat": -33.8703, "lng": 151.2192,
+        "hours": {d: [["09:30", "13:00"]] for d in ("mon", "tue", "thu", "fri")},
+        "free_wifi": True, "bathroom": True,
+        "perishables": (42, 45),
+        "non_perishables": (66, 420),
+        "toiletries": (30, 1200),
+    },
+    {
+        "name": "Salvos Streetlevel Surry Hills",
+        "lat": -33.8860, "lng": 151.2110,
+        "hours": {d: [["10:00", "16:00"]] for d in _MON_FRI},
+        "free_wifi": True, "bathroom": True,
+        "perishables": (38, 35),
+        "non_perishables": (70, 180),
+        "toiletries": (52, 150),
+    },
+    {
+        "name": "Newtown Neighbourhood Centre Food Hub",
+        "lat": -33.8975, "lng": 151.1795,
+        "hours": {"tue": [["11:00", "14:00"]], "thu": [["11:00", "14:00"]]},
+        "free_wifi": True, "bathroom": False,
+        "perishables": (30, 75),
+        "non_perishables": (55, 900),
+        "toiletries": (25, 540),
+    },
+    {
+        "name": "The Factory Community Pantry",
+        "lat": -33.9055, "lng": 151.2085,
+        "hours": {d: [["09:00", "12:00"]] for d in ("mon", "tue", "thu", "fri")},
+        "free_wifi": False, "bathroom": True,
+        "perishables": (50, 20),
+        "non_perishables": (62, 360),
+        "toiletries": (48, 200),
+    },
+    {
+        "name": "Kings Cross Community Pantry",
+        "lat": -33.8740, "lng": 151.2235,
+        "hours": {
+            d: [["08:00", "13:00"]]
+            for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+        },
+        "free_wifi": True, "bathroom": True,
+        "perishables": (58, 10),
+        "non_perishables": (85, 60),
+        "toiletries": (70, 45),
+    },
+]
 
 app = Flask(__name__)
 
@@ -60,7 +152,16 @@ def init_db():
             lat REAL NOT NULL,
             lng REAL NOT NULL,
             status TEXT NOT NULL DEFAULT 'unknown',
-            last_report TEXT
+            last_report TEXT,
+            hours TEXT,
+            free_wifi INTEGER NOT NULL DEFAULT 0,
+            bathroom INTEGER NOT NULL DEFAULT 0,
+            perishables_pct REAL,
+            perishables_reported TEXT,
+            non_perishables_pct REAL,
+            non_perishables_reported TEXT,
+            toiletries_pct REAL,
+            toiletries_reported TEXT
         )
         """
     )
@@ -83,6 +184,20 @@ def init_db():
         )
     if "last_report" not in columns:
         db.execute("ALTER TABLE resources ADD COLUMN last_report TEXT")
+
+    for col, decl in (
+        ("hours", "TEXT"),
+        ("free_wifi", "INTEGER NOT NULL DEFAULT 0"),
+        ("bathroom", "INTEGER NOT NULL DEFAULT 0"),
+        ("perishables_pct", "REAL"),
+        ("perishables_reported", "TEXT"),
+        ("non_perishables_pct", "REAL"),
+        ("non_perishables_reported", "TEXT"),
+        ("toiletries_pct", "REAL"),
+        ("toiletries_reported", "TEXT"),
+    ):
+        if col not in columns:
+            db.execute(f"ALTER TABLE resources ADD COLUMN {col} {decl}")
 
     count = db.execute("SELECT COUNT(*) FROM resources").fetchone()[0]
     if count == 0:
@@ -107,6 +222,37 @@ def init_db():
         db.execute(
             "UPDATE resources SET status = ?, last_report = ? WHERE id = ?",
             (status, reported_at, row[0]),
+        )
+
+    # Add any seed food bank not already present. Additive and idempotent, so it
+    # is safe to run on every startup, on a fresh or an existing database.
+    for fb in SEED_FOODBANKS:
+        if db.execute(
+            "SELECT 1 FROM resources WHERE name = ?", (fb["name"],)
+        ).fetchone() is not None:
+            continue
+        pct = {cat: fb[cat][0] for cat in ("perishables", "non_perishables", "toiletries")}
+        reported = {
+            cat: (now - timedelta(minutes=fb[cat][1])).isoformat()
+            for cat in ("perishables", "non_perishables", "toiletries")
+        }
+        db.execute(
+            """
+            INSERT INTO resources (
+                name, kind, lat, lng, hours, free_wifi, bathroom,
+                perishables_pct, perishables_reported,
+                non_perishables_pct, non_perishables_reported,
+                toiletries_pct, toiletries_reported
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fb["name"], "pantry", fb["lat"], fb["lng"],
+                json.dumps(fb["hours"]),
+                int(fb["free_wifi"]), int(fb["bathroom"]),
+                pct["perishables"], reported["perishables"],
+                pct["non_perishables"], reported["non_perishables"],
+                pct["toiletries"], reported["toiletries"],
+            ),
         )
 
     db.commit()
@@ -136,15 +282,32 @@ def index():
 @app.route("/api/resources")
 def resources():
     rows = get_db().execute(
-        "SELECT id, name, kind, lat, lng, status, last_report FROM resources"
+        """
+        SELECT id, name, kind, lat, lng, status, last_report,
+               hours, free_wifi, bathroom,
+               perishables_pct, perishables_reported,
+               non_perishables_pct, non_perishables_reported,
+               toiletries_pct, toiletries_reported
+        FROM resources
+        """
     ).fetchall()
     now = datetime.now(timezone.utc)
+    now_local = datetime.now(SYDNEY_TZ)
     result = []
     for row in rows:
         item = dict(row)
         item["confidence"] = report_confidence(
             item["kind"], item["status"], item["last_report"], now
         )
+        item["hours"] = json.loads(item["hours"]) if item["hours"] else None
+        item["free_wifi"] = bool(item["free_wifi"])
+        item["bathroom"] = bool(item["bathroom"])
+        item["overall_capacity"] = capacity.overall_capacity(
+            item["perishables_pct"],
+            item["non_perishables_pct"],
+            item["toiletries_pct"],
+        )
+        item["is_open_now"] = openhours.is_open(item["hours"], now_local)
         result.append(item)
     return jsonify(result)
 
