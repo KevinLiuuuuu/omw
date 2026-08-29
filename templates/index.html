@@ -8,30 +8,47 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
-    html, body, #map { height: 100%; margin: 0; }
+    html, body { height: 100%; margin: 0; }
+    /* Map fills the whole viewport; panels float above it. */
+    #map { position: fixed; inset: 0; z-index: 0; }
   </style>
 </head>
 <body>
   <div id="map"></div>
 
-  <div id="panel"
-       class="hidden fixed top-4 right-4 z-[1000] w-72 rounded-lg bg-white p-4 shadow-lg">
-    <button id="panel-close"
-            class="absolute top-2 right-3 text-xl leading-none text-gray-400 hover:text-gray-600">&times;</button>
-    <h2 id="panel-name" class="pr-4 font-semibold text-gray-900"></h2>
-    <p id="panel-kind" class="text-sm capitalize text-gray-500"></p>
-    <div class="mt-3 flex items-center gap-2">
-      <span id="panel-dot" class="inline-block h-3 w-3 rounded-full"></span>
-      <span id="panel-status" class="text-sm font-medium"></span>
+  <!-- Sidebar toggle: always visible, sits above the sidebar. -->
+  <button id="sidebar-toggle"
+          class="fixed left-4 top-4 z-[1001] rounded-lg bg-white/80 px-3 py-2 text-sm font-medium text-gray-700 shadow-lg backdrop-blur hover:bg-white">
+    &#9776; <span id="sidebar-toggle-label">Hide</span>
+  </button>
+
+  <!-- Left sidebar: search + filter, then a scrollable list of cards. -->
+  <aside id="sidebar"
+         class="fixed bottom-4 left-4 top-16 z-[1000] flex w-80 flex-col overflow-hidden rounded-lg bg-white/80 shadow-lg backdrop-blur transition-transform duration-200">
+    <div class="space-y-2 border-b border-gray-200/70 p-3">
+      <input id="search" type="search" placeholder="Search resources&hellip;"
+             class="w-full rounded-md border border-gray-300 bg-white/80 px-3 py-2 text-sm outline-none focus:border-gray-400">
+      <select id="filter"
+              class="w-full rounded-md border border-gray-300 bg-white/80 px-3 py-2 text-sm outline-none focus:border-gray-400">
+        <option value="all">All resources</option>
+        <option value="shelter">Shelters</option>
+        <option value="pantry">Pantries</option>
+        <option value="wifi">Free wifi</option>
+      </select>
     </div>
-    <p id="panel-reported" class="mt-1 text-sm text-gray-500"></p>
-    <p id="panel-confidence" class="mt-1 text-sm text-gray-500"></p>
-    <div class="mt-4 flex gap-2">
-      <button id="btn-available"
-              class="flex-1 rounded-md bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-700">It's available</button>
-      <button id="btn-out"
-              class="flex-1 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700">It's out</button>
-    </div>
+    <div id="card-list" class="flex-1 space-y-2 overflow-y-auto p-3"></div>
+  </aside>
+
+  <!-- Detail panel: hidden until a location is selected. -->
+  <div id="detail"
+       class="hidden fixed right-4 top-4 z-[1000] w-80 rounded-lg bg-white/80 p-4 shadow-lg backdrop-blur">
+    <button id="detail-close"
+            class="absolute right-3 top-2 text-xl leading-none text-gray-400 hover:text-gray-600">&times;</button>
+    <h2 class="pr-4 font-semibold text-gray-900">Location detail</h2>
+    <p class="mt-1 text-sm text-gray-500">
+      Placeholder &mdash; details for the selected location will appear here.
+    </p>
+    <p id="detail-ref" class="mt-3 text-xs text-gray-400"></p>
   </div>
 
   <script>
@@ -43,44 +60,8 @@
       unknown: "#9ca3af",
     };
 
-    const STATUS_LABELS = {
-      available: "Available",
-      unavailable: "Unavailable",
-      unknown: "Unknown",
-    };
-
-    // Turn an ISO timestamp into plain English like "20 minutes ago".
-    // Returns null if there is no timestamp.
-    function timeAgo(iso) {
-      if (!iso) return null;
-      const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
-      if (seconds < 45) return "just now";
-
-      const units = [
-        ["day", 86400],
-        ["hour", 3600],
-        ["minute", 60],
-      ];
-      for (const [name, size] of units) {
-        const value = Math.floor(seconds / size);
-        if (value >= 1) {
-          return `${value} ${name}${value === 1 ? "" : "s"} ago`;
-        }
-      }
-      return "just now";
-    }
-
     // Once confidence drops this low we no longer trust the status at all.
     const UNKNOWN_BELOW = 0.2;
-
-    // Plain-English take on a confidence value. Returns null when there is
-    // nothing worth saying (no report / unknown status).
-    function confidenceText(c) {
-      if (c == null || c <= 0) return null;
-      if (c >= 0.6) return "high confidence";
-      if (c >= UNKNOWN_BELOW) return "getting stale";
-      return "needs checking";
-    }
 
     // Colour a marker gets on the map: grey once we can't trust the status.
     function markerColor(res) {
@@ -109,73 +90,73 @@
       );
     }
 
-    const panel = document.getElementById("panel");
-    document.getElementById("panel-close").addEventListener("click", () => {
-      panel.classList.add("hidden");
+    // --- Sidebar collapse -------------------------------------------------
+    const sidebar = document.getElementById("sidebar");
+    const toggleLabel = document.getElementById("sidebar-toggle-label");
+    document.getElementById("sidebar-toggle").addEventListener("click", () => {
+      const collapsed = sidebar.classList.toggle("-translate-x-[150%]");
+      toggleLabel.textContent = collapsed ? "Show" : "Hide";
     });
 
-    let currentRes = null;
-    let currentMarker = null;
+    // --- Selection + detail panel --------------------------------------
+    const detail = document.getElementById("detail");
+    const detailRef = document.getElementById("detail-ref");
+    let selectedKey = null;
 
-    function showPanel(res, marker) {
-      currentRes = res;
-      currentMarker = marker;
-      const trusted = res.confidence == null || res.confidence >= UNKNOWN_BELOW;
-      const status = trusted && STATUS_COLORS[res.status] ? res.status : "unknown";
-      document.getElementById("panel-name").textContent = res.name;
-      document.getElementById("panel-kind").textContent = res.kind;
-      document.getElementById("panel-dot").style.backgroundColor = STATUS_COLORS[status];
-      const statusEl = document.getElementById("panel-status");
-      statusEl.textContent = STATUS_LABELS[status];
-      statusEl.style.color = STATUS_COLORS[status];
+    function closeDetail() {
+      selectedKey = null;
+      detail.classList.add("hidden");
+      syncCardHighlight();
+    }
 
-      const ago = timeAgo(res.last_report);
-      const reportedEl = document.getElementById("panel-reported");
-      if (!ago) {
-        reportedEl.textContent = "No reports yet";
-      } else if (status === "available") {
-        reportedEl.textContent = `confirmed ${ago}`;
-      } else {
-        reportedEl.textContent = `reported ${ago}`;
+    // Selecting a new location opens the panel; selecting the current one
+    // again dismisses it.
+    function selectLocation(key, label) {
+      if (selectedKey === key) {
+        closeDetail();
+        return;
       }
-
-      const confidenceEl = document.getElementById("panel-confidence");
-      const phrase = ago ? confidenceText(res.confidence) : null;
-      confidenceEl.textContent = phrase || "";
-      confidenceEl.classList.toggle("hidden", !phrase);
-
-      panel.classList.remove("hidden");
+      selectedKey = key;
+      detailRef.textContent = label ? `Selected: ${label}` : "";
+      detail.classList.remove("hidden");
+      syncCardHighlight();
     }
 
-    function sendReport(status) {
-      if (!currentRes) return;
-      const res = currentRes;
-      const marker = currentMarker;
-      fetch(`/api/resources/${res.id}/report`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          res.status = data.status;
-          res.last_report = data.last_report;
-          res.confidence = data.confidence;
-          if (marker) {
-            marker.setStyle({
-              fillColor: markerColor(res),
-              fillOpacity: markerOpacity(res),
-            });
-          }
-          if (currentRes === res) showPanel(res, marker);
-        });
+    document.getElementById("detail-close").addEventListener("click", closeDetail);
+
+    // --- Placeholder sidebar cards -----------------------------------
+    const cardList = document.getElementById("card-list");
+    const PLACEHOLDER_CARDS = [
+      "Resource one",
+      "Resource two",
+      "Resource three",
+      "Resource four",
+      "Resource five",
+      "Resource six",
+    ];
+
+    PLACEHOLDER_CARDS.forEach((name, i) => {
+      const key = `card-${i}`;
+      const card = document.createElement("button");
+      card.type = "button";
+      card.dataset.key = key;
+      card.className =
+        "block w-full rounded-md border border-gray-200 bg-white/70 p-3 text-left hover:bg-white";
+      card.innerHTML =
+        `<p class="text-sm font-medium text-gray-900">${name}</p>` +
+        `<p class="mt-0.5 text-xs text-gray-500">Placeholder card</p>`;
+      card.addEventListener("click", () => selectLocation(key, name));
+      cardList.appendChild(card);
+    });
+
+    function syncCardHighlight() {
+      cardList.querySelectorAll("[data-key]").forEach((el) => {
+        el.classList.toggle("ring-2", el.dataset.key === selectedKey);
+        el.classList.toggle("ring-gray-400", el.dataset.key === selectedKey);
+      });
     }
 
-    document.getElementById("btn-available")
-      .addEventListener("click", () => sendReport("available"));
-    document.getElementById("btn-out")
-      .addEventListener("click", () => sendReport("unavailable"));
-
+    // --- Map markers (colouring + confidence fading kept intact) -------
     fetch("/api/resources")
       .then((r) => r.json())
       .then((resources) => {
@@ -187,7 +168,7 @@
             fillColor: markerColor(res),
             fillOpacity: markerOpacity(res),
           }).addTo(map);
-          marker.on("click", () => showPanel(res, marker));
+          marker.on("click", () => selectLocation(`res-${res.id}`, res.name));
         });
       });
   </script>
