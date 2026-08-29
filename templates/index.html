@@ -77,15 +77,109 @@
       return Math.max(0.25, Math.min(0.9, c));
     }
 
+    // Turn an ISO timestamp into plain English like "20 minutes ago".
+    // Returns null if there is no timestamp.
+    function timeAgo(iso) {
+      if (!iso) return null;
+      const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+      if (seconds < 45) return "just now";
+      for (const [name, size] of [["day", 86400], ["hour", 3600], ["minute", 60]]) {
+        const value = Math.floor(seconds / size);
+        if (value >= 1) return `${value} ${name}${value === 1 ? "" : "s"} ago`;
+      }
+      return "just now";
+    }
+
+    // --- Distance + open-hours helpers (map-list shares these) ----------
+    const DEG = Math.PI / 180;
+
+    // Great-circle distance between two [lat, lng] points, in kilometres.
+    function haversineKm(a, b) {
+      const dLat = (b[0] - a[0]) * DEG;
+      const dLng = (b[1] - a[1]) * DEG;
+      const s =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(a[0] * DEG) * Math.cos(b[0] * DEG) * Math.sin(dLng / 2) ** 2;
+      return 2 * 6371 * Math.asin(Math.sqrt(s));
+    }
+
+    // Approximate walking time: haversine x 1.4 for street routing, at 5 km/h.
+    function walkPhrase(km) {
+      const mins = Math.max(1, Math.round((km * 1.4) / 5 * 60));
+      if (mins < 60) return `${mins} min walk`;
+      return `${Math.floor(mins / 60)}h ${mins % 60}m walk`;
+    }
+
+    function toMinutes(hhmm) {
+      const [h, m] = hhmm.split(":").map(Number);
+      return h * 60 + m;
+    }
+
+    // "18:00" -> "6pm", "18:30" -> "6:30pm", "24:00" -> "midnight".
+    function clockLabel(hhmm) {
+      let [h, m] = hhmm.split(":").map(Number);
+      if (h === 24 && m === 0) return "midnight";
+      h %= 24;
+      const ap = h >= 12 ? "pm" : "am";
+      let hr = h % 12;
+      if (hr === 0) hr = 12;
+      return m ? `${hr}:${String(m).padStart(2, "0")}${ap}` : `${hr}${ap}`;
+    }
+
+    // Current Australia/Sydney weekday key + minutes-since-midnight, matching
+    // how the API reckons is_open_now.
+    function sydneyNow() {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Australia/Sydney",
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(new Date());
+      const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+      return {
+        day: p.weekday.toLowerCase(),
+        minutes: (parseInt(p.hour, 10) % 24) * 60 + parseInt(p.minute, 10),
+      };
+    }
+
+    // { text, open } for a resource's card: green "Open until 6pm" vs grey "Closed".
+    function openStatus(res) {
+      if (res.is_open_now == null) return { text: "Hours unknown", open: false };
+      if (!res.is_open_now) return { text: "Closed", open: false };
+      const { day, minutes } = sydneyNow();
+      const intervals = (res.hours && res.hours[day]) || [];
+      for (const [start, end] of intervals) {
+        if (toMinutes(start) <= minutes && minutes < toMinutes(end)) {
+          if (start === "00:00" && end === "24:00") return { text: "Open 24h", open: true };
+          return { text: `Open until ${clockLabel(end)}`, open: true };
+        }
+      }
+      return { text: "Open", open: true };
+    }
+
+    // Directions-free Google Maps link straight from the coordinates.
+    function mapsUrl(res) {
+      return `https://www.google.com/maps/search/?api=1&query=${res.lat},${res.lng}`;
+    }
+
     const map = L.map("map").setView(SYDNEY_CBD, 14);
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap contributors",
     }).addTo(map);
 
+    // Distances and sort order are measured from here; defaults to the CBD
+    // until geolocation resolves.
+    let userLatLng = SYDNEY_CBD;
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => map.setView([pos.coords.latitude, pos.coords.longitude], 14),
+        (pos) => {
+          userLatLng = [pos.coords.latitude, pos.coords.longitude];
+          map.setView(userLatLng, 14);
+          renderList();
+        },
         () => map.setView(SYDNEY_CBD, 14)
       );
     }
@@ -124,31 +218,6 @@
 
     document.getElementById("detail-close").addEventListener("click", closeDetail);
 
-    // --- Placeholder sidebar cards -----------------------------------
-    const cardList = document.getElementById("card-list");
-    const PLACEHOLDER_CARDS = [
-      "Resource one",
-      "Resource two",
-      "Resource three",
-      "Resource four",
-      "Resource five",
-      "Resource six",
-    ];
-
-    PLACEHOLDER_CARDS.forEach((name, i) => {
-      const key = `card-${i}`;
-      const card = document.createElement("button");
-      card.type = "button";
-      card.dataset.key = key;
-      card.className =
-        "block w-full rounded-md border border-gray-200 bg-white/70 p-3 text-left hover:bg-white";
-      card.innerHTML =
-        `<p class="text-sm font-medium text-gray-900">${name}</p>` +
-        `<p class="mt-0.5 text-xs text-gray-500">Placeholder card</p>`;
-      card.addEventListener("click", () => selectLocation(key, name));
-      cardList.appendChild(card);
-    });
-
     function syncCardHighlight() {
       cardList.querySelectorAll("[data-key]").forEach((el) => {
         el.classList.toggle("ring-2", el.dataset.key === selectedKey);
@@ -156,10 +225,90 @@
       });
     }
 
-    // --- Map markers (colouring + confidence fading kept intact) -------
+    // --- Sidebar list + map markers, both fed from /api/resources -------
+    const cardList = document.getElementById("card-list");
+    const searchBox = document.getElementById("search");
+    let allResources = [];
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, (c) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
+    }
+
+    // Build one sidebar card. `res` already carries a `_km` distance.
+    function makeCard(res) {
+      const key = `res-${res.id}`;
+      const status = openStatus(res);
+      const ago = timeAgo(res.last_report);
+      const cap =
+        res.overall_capacity == null
+          ? null
+          : `${Math.round(res.overall_capacity)}% capacity`;
+
+      const card = document.createElement("div");
+      card.dataset.key = key;
+      card.className =
+        "rounded-md border border-gray-200 bg-white/70 p-3 hover:bg-white cursor-pointer";
+
+      const bits = [];
+      bits.push(
+        `<p class="text-sm font-medium text-gray-900">${escapeHtml(res.name)}</p>`
+      );
+      bits.push(
+        `<p class="mt-1 text-xs font-medium ${
+          status.open ? "text-green-600" : "text-gray-500"
+        }">${status.text}</p>`
+      );
+      const meta = [walkPhrase(res._km)];
+      if (cap) meta.push(cap);
+      if (ago) meta.push(`updated ${ago}`);
+      bits.push(
+        `<p class="mt-1 text-xs text-gray-500">${meta.join(" &middot; ")}</p>`
+      );
+      bits.push(
+        `<button type="button" data-maps
+                 class="mt-2 inline-block rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50">
+           Open in Google Maps
+         </button>`
+      );
+      card.innerHTML = bits.join("");
+
+      card.addEventListener("click", (e) => {
+        if (e.target.closest("[data-maps]")) {
+          window.open(mapsUrl(res), "_blank", "noopener");
+          return;
+        }
+        map.panTo([res.lat, res.lng]);
+        selectLocation(key, res.name);
+      });
+      return card;
+    }
+
+    // Re-render the list: filter by the search box, sort by distance.
+    function renderList() {
+      const term = searchBox.value.trim().toLowerCase();
+      const rows = allResources
+        .map((res) => ({ ...res, _km: haversineKm(userLatLng, [res.lat, res.lng]) }))
+        .filter((res) => res.name.toLowerCase().includes(term))
+        .sort((a, b) => a._km - b._km);
+
+      cardList.innerHTML = "";
+      if (rows.length === 0) {
+        cardList.innerHTML =
+          '<p class="p-1 text-xs text-gray-500">No matching resources.</p>';
+        return;
+      }
+      rows.forEach((res) => cardList.appendChild(makeCard(res)));
+      syncCardHighlight();
+    }
+
+    searchBox.addEventListener("input", renderList);
+
     fetch("/api/resources")
       .then((r) => r.json())
       .then((resources) => {
+        allResources = resources;
         resources.forEach((res) => {
           const marker = L.circleMarker([res.lat, res.lng], {
             radius: 9,
@@ -170,6 +319,7 @@
           }).addTo(map);
           marker.on("click", () => selectLocation(`res-${res.id}`, res.name));
         });
+        renderList();
       });
   </script>
 </body>
