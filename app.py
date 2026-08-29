@@ -1,14 +1,20 @@
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
 from flask import Flask, g, jsonify, render_template, request
 
 import capacity
 import confidence
 import openhours
+import routing
+
+load_dotenv()
+ORS_API_KEY = os.environ.get("ORS_API_KEY")
 
 DB_PATH = Path(__file__).parent / "omw.db"
 
@@ -404,6 +410,24 @@ def report_confidence(kind, status, last_report, now):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/route")
+def route():
+    """Foot-walking route between two points, from OpenRouteService.
+
+    Query: from_lat, from_lng, to_lat, to_lng. Returns the route geometry as
+    GeoJSON plus distance_m and duration_s. On any ORS error or timeout, falls
+    back to a straight line and a haversine estimate with is_estimate true.
+    """
+    try:
+        coords = [
+            float(request.args[name])
+            for name in ("from_lat", "from_lng", "to_lat", "to_lng")
+        ]
+    except (KeyError, ValueError):
+        return jsonify({"error": "from_lat, from_lng, to_lat, to_lng required"}), 400
+    return jsonify(routing.get_route(*coords, ORS_API_KEY))
 
 
 @app.route("/api/resources")

@@ -142,6 +142,13 @@
       return `${Math.floor(mins / 60)}h ${mins % 60}m walk`;
     }
 
+    // Same phrasing from a real duration in seconds (ORS route).
+    function durationWalkPhrase(seconds) {
+      const mins = Math.max(1, Math.round(seconds / 60));
+      if (mins < 60) return `${mins} min walk`;
+      return `${Math.floor(mins / 60)}h ${mins % 60}m walk`;
+    }
+
     function toMinutes(hhmm) {
       const [h, m] = hhmm.split(":").map(Number);
       return h * 60 + m;
@@ -247,6 +254,44 @@
     let editing = false;      // detail panel is showing the update-info sliders
     const markers = {};       // resource id -> Leaflet marker, for label toggling
 
+    // Walking route to the selected location, drawn as a single polyline.
+    const ROUTE_COLOR = "#2563eb";
+    let routeLayer = null;
+
+    function clearRoute() {
+      if (routeLayer) {
+        map.removeLayer(routeLayer);
+        routeLayer = null;
+      }
+    }
+
+    // Fetch a foot-walking route from the backend and draw it. The backend
+    // falls back to a straight line + haversine estimate on any ORS failure,
+    // flagged is_estimate; we keep the panel's estimate and label it "approx".
+    async function loadRoute(res) {
+      clearRoute();
+      const key = `res-${res.id}`;
+      const params = new URLSearchParams({
+        from_lat: userLatLng[0], from_lng: userLatLng[1],
+        to_lat: res.lat, to_lng: res.lng,
+      });
+      try {
+        const resp = await fetch(`/api/route?${params}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (selectedKey !== key) return;   // selection moved on while fetching
+        res._route = data;
+        const latlngs = data.geometry.coordinates.map((c) => [c[1], c[0]]);
+        routeLayer = L.polyline(latlngs, {
+          color: ROUTE_COLOR, weight: 5, lineCap: "round", lineJoin: "round",
+        }).addTo(map);
+        map.fitBounds(routeLayer.getBounds(), { padding: [60, 60] });
+        renderDetail();
+      } catch (e) {
+        // Leave the panel on its haversine estimate.
+      }
+    }
+
     // Only the selected pin carries a name label; everything else stays bare.
     function syncMarkerLabels() {
       Object.entries(markers).forEach(([id, marker]) => {
@@ -276,6 +321,7 @@
       selectedKey = null;
       editing = false;
       detail.classList.add("hidden");
+      clearRoute();
       syncCardHighlight();
       syncMarkerLabels();
     }
@@ -298,11 +344,13 @@
       }
       selectedKey = key;
       editing = false;
+      delete res._route;
       detail.classList.remove("hidden");
       detail.scrollTop = 0;
       renderDetail();
       syncCardHighlight();
       syncMarkerLabels();
+      loadRoute(res);
     }
 
     document.getElementById("detail-close").addEventListener("click", closeDetail);
@@ -341,7 +389,16 @@
           status.open ? "text-green-600" : "text-gray-500"
         }">${status.text}</p>`
       );
-      parts.push(`<p class="mt-1 text-xs text-gray-500">${walkPhrase(km)}</p>`);
+      // Real ORS walk time once the route loads; the haversine estimate until
+      // then, labelled "approx" when ORS failed and we're stuck with it.
+      const route = res._route;
+      let walkText = walkPhrase(km);
+      if (route && !route.is_estimate) {
+        walkText = durationWalkPhrase(route.duration_s);
+      } else if (route && route.is_estimate) {
+        walkText = `${walkPhrase(km)} approx`;
+      }
+      parts.push(`<p class="mt-1 text-xs text-gray-500">${walkText}</p>`);
       parts.push(
         `<a href="${mapsUrl(res)}" target="_blank" rel="noopener"
             class="mt-2 inline-block rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50">
