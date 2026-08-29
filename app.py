@@ -8,11 +8,13 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from flask import Flask, g, jsonify, render_template, request
+from google.genai import errors as genai_errors
 
 import capacity
 import confidence
 import openhours
 import routing
+import shelf_detector
 import vision
 
 load_dotenv()
@@ -603,20 +605,41 @@ def capacity_report(resource_id):
 # cuts the thread off mid-call. Image calls have been observed at 15-20s even with
 # a small payload and a trivial prompt.
 ESTIMATE_TIMEOUT_SECONDS = 50
+# The offline YOLO fallback (shelf_detector) runs a single local inference. It is
+# not a network call, so it needs a much tighter deadline than the Gemini path.
+LOCAL_ESTIMATE_TIMEOUT_SECONDS = 15
 _vision_pool = ThreadPoolExecutor(max_workers=2)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+
+def _local_estimate(image_bytes):
+    """Shape shelf_detector's single 0-100 int into the three-key response dict.
+
+    Returns the dict with every category set to that one value, or None if the
+    local detector produced nothing. Never raises.
+    """
+    value = shelf_detector.detect_fullness(image_bytes)
+    if value is None:
+        return None
+    return {f"{cat}_pct": value for cat in CAPACITY_CATEGORIES}
 
 
 @app.route("/api/estimate", methods=["POST"])
 def estimate():
     """Guess per-category shelf fullness from an uploaded photo.
 
-    Body: multipart/form-data with an "image" file. Returns
-    {"perishables_pct", "non_perishables_pct", "toiletries_pct"} with 200 on
-    success. If the estimate could not be produced, returns 204 with an empty
-    body. Any failure (no key, bad image, timeout, API error) returns 503 with
-    {"error": "unavailable"}. The frontend treats anything but a 200 as "fall
-    back to the manual sliders" and shows nothing.
+    Body: multipart/form-data with an "image" file. On success returns 200 with
+    {"perishables_pct", "non_perishables_pct", "toiletries_pct"} plus a "source"
+    key: "gemini" when the Gemini vision path produced the estimate, "local"
+    when it degraded to the offline shelf detector.
+
+    The Gemini path is tried first. If it returns nothing usable -- None, a
+    timeout, any exception, or a 429 quota error (quota exhaustion degrades
+    exactly like a timeout, never a 503) -- the same image bytes are passed to
+    shelf_detector.detect_fullness, whose single 0-100 value fills all three
+    keys. If both paths come up empty, returns 204 with an empty body. Bad
+    requests still return 400/413. The frontend treats anything but a 200 as
+    "fall back to the manual sliders" and shows nothing.
     """
     upload = request.files.get("image")
     if upload is None or not upload.filename:
@@ -628,20 +651,41 @@ def estimate():
     if len(image_bytes) > MAX_IMAGE_BYTES:
         return jsonify({"error": "image too large"}), 413
 
+    result = None
     future = _vision_pool.submit(vision.estimate_capacity, image_bytes)
     try:
         result = future.result(timeout=ESTIMATE_TIMEOUT_SECONDS)
     except FutureTimeoutError:
         future.cancel()
-        app.logger.exception("photo capacity estimate timed out")
-        return jsonify({"error": "unavailable"}), 503
+        app.logger.exception("photo capacity estimate timed out; trying local fallback")
+    except genai_errors.ClientError as exc:
+        if getattr(exc, "code", None) == 429:
+            app.logger.warning("Gemini quota exhausted (429); trying local fallback")
+        else:
+            app.logger.exception("photo capacity estimate failed; trying local fallback")
     except Exception:
-        app.logger.exception("photo capacity estimate failed")
-        return jsonify({"error": "unavailable"}), 503
+        app.logger.exception("photo capacity estimate failed; trying local fallback")
 
-    if result is None:
-        return "", 204
-    return jsonify(result)
+    if result is not None:
+        result["source"] = "gemini"
+        return jsonify(result)
+
+    local_future = _vision_pool.submit(_local_estimate, image_bytes)
+    try:
+        local_result = local_future.result(timeout=LOCAL_ESTIMATE_TIMEOUT_SECONDS)
+    except FutureTimeoutError:
+        local_future.cancel()
+        app.logger.exception("local shelf estimate timed out")
+        local_result = None
+    except Exception:
+        app.logger.exception("local shelf estimate failed")
+        local_result = None
+
+    if local_result is not None:
+        local_result["source"] = "local"
+        return jsonify(local_result)
+
+    return "", 204
 
 
 init_db()
