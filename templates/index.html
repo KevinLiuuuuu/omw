@@ -11,6 +11,42 @@
     html, body { height: 100%; margin: 0; }
     /* Map fills the whole viewport; panels float above it. */
     #map { position: fixed; inset: 0; z-index: 0; }
+
+    /* Keep attribution to a quiet corner chip. */
+    .leaflet-control-attribution {
+      font-size: 10px;
+      color: #6b7280;
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(2px);
+      padding: 1px 6px;
+      border-radius: 6px 0 0 0;
+    }
+    .leaflet-control-attribution a { color: #4b5563; }
+
+    /* Teardrop pin: same size for every marker, colour set per status. */
+    .pin {
+      width: 22px;
+      height: 22px;
+      border: 2px solid #fff;
+      border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+      box-sizing: border-box;
+    }
+
+    /* Name label shown only on the selected pin. */
+    .pin-label {
+      background: rgba(255, 255, 255, 0.92);
+      border: none;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+      border-radius: 6px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #374151;
+      white-space: nowrap;
+    }
+    .pin-label::before { display: none; }
   </style>
 </head>
 <body>
@@ -159,11 +195,27 @@
       return `https://www.google.com/maps/search/?api=1&query=${res.lat},${res.lng}`;
     }
 
-    const map = L.map("map").setView(SYDNEY_CBD, 14);
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: "&copy; OpenStreetMap contributors",
-    }).addTo(map);
+    // Navigation-app chrome: no default zoom/attribution boxes; we place our
+    // own zoom bottom-right and a small attribution chip beneath it.
+    const map = L.map("map", {
+      zoomControl: false,
+      attributionControl: false,
+    }).setView(SYDNEY_CBD, 14);
+
+    L.control.zoom({ position: "bottomright" }).addTo(map);
+    L.control.attribution({ position: "bottomright", prefix: false }).addTo(map);
+
+    L.tileLayer(
+      "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+      {
+        subdomains: "abcd",
+        maxZoom: 20,
+        detectRetina: true,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>, ' +
+          '&copy; <a href="https://carto.com/attributions">CARTO</a>',
+      }
+    ).addTo(map);
 
     // Distances and sort order are measured from here; defaults to the CBD
     // until geolocation resolves.
@@ -193,6 +245,26 @@
     const detailBody = document.getElementById("detail-body");
     let selectedKey = null;   // "res-<id>" of the open location, or null
     let editing = false;      // detail panel is showing the update-info sliders
+    const markers = {};       // resource id -> Leaflet marker, for label toggling
+
+    // Only the selected pin carries a name label; everything else stays bare.
+    function syncMarkerLabels() {
+      Object.entries(markers).forEach(([id, marker]) => {
+        if (selectedKey === `res-${id}`) {
+          const res = allResources.find((r) => r.id === Number(id));
+          marker
+            .bindTooltip(escapeHtml(res.name), {
+              permanent: true,
+              direction: "top",
+              className: "pin-label",
+              offset: [0, -6],
+            })
+            .openTooltip();
+        } else {
+          marker.unbindTooltip();
+        }
+      });
+    }
 
     const CATEGORIES = [
       ["perishables", "Perishables"],
@@ -205,6 +277,7 @@
       editing = false;
       detail.classList.add("hidden");
       syncCardHighlight();
+      syncMarkerLabels();
     }
 
     // The live allResources entry for the open location (not a stale copy), so
@@ -229,6 +302,7 @@
       detail.scrollTop = 0;
       renderDetail();
       syncCardHighlight();
+      syncMarkerLabels();
     }
 
     document.getElementById("detail-close").addEventListener("click", closeDetail);
@@ -499,14 +573,16 @@
       .then((resources) => {
         allResources = resources;
         resources.forEach((res) => {
-          const marker = L.circleMarker([res.lat, res.lng], {
-            radius: 9,
-            color: "#ffffff",
-            weight: 2,
-            fillColor: markerColor(res),
-            fillOpacity: markerOpacity(res),
-          }).addTo(map);
+          const icon = L.divIcon({
+            className: "",
+            html: `<div class="pin" style="background:${markerColor(res)};opacity:${markerOpacity(res)}"></div>`,
+            iconSize: [22, 22],
+            iconAnchor: [11, 22],
+            tooltipAnchor: [0, -14],
+          });
+          const marker = L.marker([res.lat, res.lng], { icon }).addTo(map);
           marker.on("click", () => selectLocation(res));
+          markers[res.id] = marker;
         });
         renderList();
       });
