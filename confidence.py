@@ -40,3 +40,20 @@ def decay(age_seconds, half_life):
 def confidence(kind, age_seconds):
     """Confidence in a `kind` report that is `age_seconds` old, in [0.0, 1.0]."""
     return decay(age_seconds, half_life_seconds(kind))
+
+
+def blend(old_value, old_confidence, new_value):
+    """Fold a fresh report into the existing estimate.
+
+    The old estimate is weighted by its own confidence (0.0-1.0, from `confidence`
+    above) and the new report at full weight:
+
+        blended = (old_value * old_confidence + new_value) / (old_confidence + 1)
+
+    So a stale old value (confidence near 0) is almost entirely overwritten by the
+    new report, while a fresh one (confidence near 1) only shifts halfway toward
+    it. With no prior estimate (`old_value` is None) the new report stands alone.
+    """
+    if old_value is None:
+        return float(new_value)
+    return (old_value * old_confidence + new_value) / (old_confidence + 1.0)
