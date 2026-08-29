@@ -20,7 +20,7 @@ from PIL import Image
 # Current recommended multimodal Flash model (verified against
 # ai.google.dev/gemini-api/docs/models, 2026-08). Swap to "gemini-2.5-flash" if
 # 3.7 isn't available on the account.
-MODEL = "gemini-3.6-flash"
+MODEL = "gemini-3.5-flash-lite"
 
 _log = logging.getLogger(__name__)
 
@@ -37,7 +37,9 @@ _PROMPT = (
     "100 (completely stocked): perishables (fresh/refrigerated food), "
     "non-perishables (canned and dry goods), and toiletries (hygiene products). "
     "If a category is not visible in the frame, return null for it. Also return "
-    "your overall confidence in the estimate from 0.0 to 1.0. "
+    "your overall confidence in the estimate from 0.0 to 1.0. In \"description\", "
+    "give a short description of what is visible on the shelves, maximum 15 words, "
+    "naming the actual items you can see. "
     "Return only the JSON object. No prose, no markdown fences."
 )
 
@@ -51,6 +53,7 @@ _RESPONSE_SCHEMA = {
         "perishables": {"type": "integer", "minimum": 0, "maximum": 100},
         "non_perishables": {"type": "integer", "minimum": 0, "maximum": 100},
         "toiletries": {"type": "integer", "minimum": 0, "maximum": 100},
+        "description": {"type": "string"},
     },
     "required": ["perishables", "non_perishables", "toiletries"],
 }
@@ -93,7 +96,11 @@ def _loads_loose(text):
 
 
 def _coerce_estimate(data):
-    """Turn a raw dict into {..._pct: int 0-100}, or None if a category is missing."""
+    """Turn a raw dict into {..._pct: int 0-100}, or None if a category is missing.
+
+    An optional "description" string is passed through (trimmed to 120 chars) when
+    present and usable; a missing or unusable description never fails the estimate.
+    """
     if not isinstance(data, dict):
         return None
     out = {}
@@ -104,6 +111,9 @@ def _coerce_estimate(data):
             out[dst] = max(0, min(100, int(data[src])))
         except (TypeError, ValueError):
             return None
+    description = data.get("description")
+    if isinstance(description, str) and description.strip():
+        out["description"] = description.strip()[:120]
     return out
 
 
