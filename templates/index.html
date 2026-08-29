@@ -130,6 +130,7 @@
     #detail-update,
     #detail-body [data-submit],
     #detail-body [data-cancel],
+    #detail-body [data-photo],
     #card-list [data-maps],
     #detail-body a {
       display: inline-flex;
@@ -154,13 +155,16 @@
     }
 
     /* Secondary actions: outline pill in the same sky blue. */
-    #card-list [data-maps], #detail-body a, #detail-body [data-cancel] {
+    #card-list [data-maps], #detail-body a, #detail-body [data-cancel],
+    #detail-body [data-photo] {
       border: 1.5px solid var(--omw-border);
       background: rgba(255, 255, 255, 0.6);
       color: var(--omw-accent);
     }
     #card-list [data-maps]:hover, #detail-body a:hover,
-    #detail-body [data-cancel]:hover { background: rgba(255, 255, 255, 0.92); }
+    #detail-body [data-cancel]:hover,
+    #detail-body [data-photo]:hover { background: rgba(255, 255, 255, 0.92); }
+    #detail-body [data-photo][disabled] { opacity: 0.6; }
 
     /* Capacity sliders. */
     #detail-body input[type="range"] { accent-color: var(--omw-accent); }
@@ -883,6 +887,11 @@ fill="currentColor" stroke="none">
       parts.push(
         `<p class="mt-1 text-xs text-gray-500">Set each slider to how full it is right now.</p>`
       );
+      parts.push(
+        `<button data-photo type="button" class="mt-3 w-full">Use a photo</button>
+         <input data-photo-input type="file" accept="image/*" capture="environment" class="hidden">
+         <p data-photo-note class="mt-2 hidden text-xs text-gray-500"></p>`
+      );
       CATEGORIES.forEach(([field, label]) => {
         const current = res[`${field}_pct`];
         const start = current == null ? 50 : Math.round(current);
@@ -917,6 +926,51 @@ fill="currentColor" stroke="none">
       detailBody
         .querySelector("[data-submit]")
         .addEventListener("click", () => submitUpdate(res));
+
+      const photoBtn = detailBody.querySelector("[data-photo]");
+      const photoInput = detailBody.querySelector("[data-photo-input]");
+      photoBtn.addEventListener("click", () => photoInput.click());
+      photoInput.addEventListener("change", () => {
+        const file = photoInput.files[0];
+        photoInput.value = "";
+        if (file) prefillFromPhoto(file);
+      });
+    }
+
+    // Optional: hand a photo to /api/estimate and, if it comes back confident,
+    // move the sliders to its guesses. Any failure — no key, timeout, error,
+    // low confidence — falls back silently to the manual sliders.
+    async function prefillFromPhoto(file) {
+      const photoBtn = detailBody.querySelector("[data-photo]");
+      const note = detailBody.querySelector("[data-photo-note]");
+      photoBtn.disabled = true;
+      photoBtn.textContent = "Reading photo…";
+      note.classList.add("hidden");
+      try {
+        const fd = new FormData();
+        fd.append("image", file);
+        const resp = await fetch("/api/estimate", { method: "POST", body: fd });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (!(data.confidence >= 0.5)) throw new Error("low confidence");
+
+        CATEGORIES.forEach(([field]) => {
+          const value = data[`${field}_pct`];
+          if (value == null) return;
+          const slider = detailBody.querySelector(`[data-slider="${field}"]`);
+          const out = detailBody.querySelector(`[data-out="${field}"]`);
+          slider.value = value;
+          out.textContent = String(value);
+        });
+        note.textContent =
+          "These are an estimate from your photo — check each slider, then Submit.";
+        note.classList.remove("hidden");
+      } catch (e) {
+        // Silent fallback: leave the sliders as they were.
+      } finally {
+        photoBtn.disabled = false;
+        photoBtn.textContent = "Use a photo";
+      }
     }
 
     async function submitUpdate(res) {
