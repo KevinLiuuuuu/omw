@@ -611,24 +611,29 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 def estimate():
     """Guess per-category shelf fullness from an uploaded photo.
 
-    Body: multipart/form-data with an "image" file. Returns
+    Body: multipart/form-data with one or more "image" files (shelves of the same
+    location; at most the first 4 are used). Returns
     {"perishables_pct", "non_perishables_pct", "toiletries_pct"} with 200 on
     success. If the estimate could not be produced, returns 204 with an empty
     body. Any failure (no key, bad image, timeout, API error) returns 503 with
     {"error": "unavailable"}. The frontend treats anything but a 200 as "fall
     back to the manual sliders" and shows nothing.
     """
-    upload = request.files.get("image")
-    if upload is None or not upload.filename:
+    uploads = [u for u in request.files.getlist("image") if u and u.filename]
+    if not uploads:
         return jsonify({"error": "no image"}), 400
+    uploads = uploads[:4]
 
-    image_bytes = upload.read()
-    if not image_bytes:
-        return jsonify({"error": "empty image"}), 400
-    if len(image_bytes) > MAX_IMAGE_BYTES:
-        return jsonify({"error": "image too large"}), 413
+    images = []
+    for upload in uploads:
+        image_bytes = upload.read()
+        if not image_bytes:
+            return jsonify({"error": "empty image"}), 400
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            return jsonify({"error": "image too large"}), 413
+        images.append(image_bytes)
 
-    future = _vision_pool.submit(vision.estimate_capacity, image_bytes)
+    future = _vision_pool.submit(vision.estimate_capacity, images)
     try:
         result = future.result(timeout=ESTIMATE_TIMEOUT_SECONDS)
     except FutureTimeoutError:

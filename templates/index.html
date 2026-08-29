@@ -903,8 +903,8 @@ fill="currentColor" stroke="none">
       );
       parts.push(
         `<button data-photo type="button" class="mt-3 w-full">Use a photo</button>
-         <input data-photo-input type="file" accept="image/*" capture="environment" class="hidden">
-         <p data-photo-checking class="mt-2 hidden text-xs text-gray-500">Checking photo<span class="photo-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></p>
+         <input data-photo-input type="file" accept="image/*" capture="environment" multiple class="hidden">
+         <p data-photo-checking class="mt-2 hidden text-xs text-gray-500"><span data-photo-checking-label>Checking photo</span><span class="photo-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span></p>
          <p data-photo-desc class="mt-2 hidden text-xs italic text-gray-500"></p>
          <p data-photo-note class="mt-2 hidden text-xs text-gray-500"></p>`
       );
@@ -953,9 +953,9 @@ fill="currentColor" stroke="none">
       const photoInput = detailBody.querySelector("[data-photo-input]");
       photoBtn.addEventListener("click", () => photoInput.click());
       photoInput.addEventListener("change", () => {
-        const file = photoInput.files[0];
+        const files = Array.from(photoInput.files);
         photoInput.value = "";
-        if (file) prefillFromPhoto(file, touchedSliders);
+        if (files.length) prefillFromPhoto(files, touchedSliders);
       });
     }
 
@@ -964,25 +964,37 @@ fill="currentColor" stroke="none">
     // usable estimate, move the sliders the user hasn't touched yet to its
     // guesses. Any failure — no key, timeout, error, unparseable body — just
     // drops the indicator and leaves the sliders alone.
-    async function prefillFromPhoto(file, touchedSliders) {
+    async function prefillFromPhoto(files, touchedSliders) {
       const photoBtn = detailBody.querySelector("[data-photo]");
       const checking = detailBody.querySelector("[data-photo-checking]");
+      const checkingLabel = detailBody.querySelector("[data-photo-checking-label]");
       const note = detailBody.querySelector("[data-photo-note]");
       const desc = detailBody.querySelector("[data-photo-desc]");
+
+      // Cap at 4; if the user picked more, use the first 4 and say so below.
+      let truncated = false;
+      if (files.length > 4) {
+        files = files.slice(0, 4);
+        truncated = true;
+      }
+      const n = files.length;
+
       photoBtn.disabled = true;
+      checkingLabel.textContent = n === 1 ? "Checking photo" : `Checking ${n} photos`;
       checking.classList.remove("hidden");
       note.classList.add("hidden");
       desc.classList.add("hidden");
       desc.textContent = "";
       try {
         const fd = new FormData();
-        fd.append("image", file);
+        files.forEach((file) => fd.append("image", file));
         const resp = await fetch("/api/estimate", { method: "POST", body: fd });
         if (resp.status !== 200) return;
         const data = await resp.json();
 
         if (typeof data.description === "string" && data.description.trim()) {
-          desc.textContent = `Photo shows: ${data.description.trim()}`;
+          const lead = n === 1 ? "Photo shows" : "Photos show";
+          desc.textContent = `${lead}: ${data.description.trim()}`;
           desc.classList.remove("hidden");
         }
 
@@ -1007,7 +1019,9 @@ fill="currentColor" stroke="none">
           touchedSliders.delete(field);
         });
         note.textContent =
-          "These are an estimate from your photo — check each slider, then Submit.";
+          (truncated ? "Only the first 4 photos were used. " : "") +
+          `These are an estimate from your ${n === 1 ? "photo" : "photos"} — ` +
+          "check each slider, then Submit.";
         note.classList.remove("hidden");
       } catch (e) {
         // Silent fallback: leave the sliders as they were.

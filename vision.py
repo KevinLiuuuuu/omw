@@ -1,8 +1,9 @@
 """Optional Gemini vision helper: guess how full a pantry's shelves are from a photo.
 
-One public function, ``estimate_capacity(image_bytes)``, which returns a dict with
-``perishables_pct`` / ``non_perishables_pct`` / ``toiletries_pct`` (each a 0-100
-int) or ``None`` if the estimate could not be produced.
+One public function, ``estimate_capacity(images)``, which takes a list of image
+byte strings (one per shelf photo) and returns a dict with ``perishables_pct`` /
+``non_perishables_pct`` / ``toiletries_pct`` (each a 0-100 int) or ``None`` if the
+estimate could not be produced. A single ``bytes`` object is also accepted.
 
 This is a pre-fill convenience for the capacity sliders, nothing more. It never
 raises: every failure path returns ``None`` so the sliders stay manual.
@@ -32,13 +33,14 @@ _log = logging.getLogger(__name__)
 TIMEOUT_MS = 45000
 
 _PROMPT = (
-    "This is a photo of shelves at a community food bank. Estimate how full the "
-    "shelves are for each of these categories, as a percentage from 0 (empty) to "
-    "100 (completely stocked): perishables (fresh/refrigerated food), "
-    "non-perishables (canned and dry goods), and toiletries (hygiene products). "
-    "If a category is not visible in the frame, return null for it. Also return "
-    "your overall confidence in the estimate from 0.0 to 1.0. In \"description\", "
-    "give a short description of what is visible on the shelves, maximum 15 words, "
+    "These photos show different shelves at the same community food bank. "
+    "Estimate how full the shelves are across all the photos together, for each "
+    "of these categories, as a percentage from 0 (empty) to 100 (completely "
+    "stocked): perishables (fresh/refrigerated food), non-perishables (canned "
+    "and dry goods), and toiletries (hygiene products). If a category is not "
+    "visible in any of the photos, return null for it. Also return your overall "
+    "confidence in the estimate from 0.0 to 1.0. In \"description\", give a short "
+    "description of what is visible across all the photos, maximum 15 words, "
     "naming the actual items you can see. "
     "Return only the JSON object. No prose, no markdown fences."
 )
@@ -127,8 +129,11 @@ def _parse_response(response):
     return _coerce_estimate(_loads_loose(getattr(response, "text", None)))
 
 
-def estimate_capacity(image_bytes: bytes):
-    """Ask Gemini to estimate shelf fullness from ``image_bytes``.
+def estimate_capacity(images):
+    """Ask Gemini to estimate shelf fullness from one or more shelf photos.
+
+    ``images`` is a list of image byte strings (a single ``bytes`` object is also
+    accepted and treated as a one-photo list); at most the first 4 are used.
 
     Returns a dict with perishables_pct / non_perishables_pct / toiletries_pct
     (each a 0-100 int), or ``None`` on any failure -- missing key, bad image, API
@@ -140,7 +145,14 @@ def estimate_capacity(image_bytes: bytes):
             _log.warning("GEMINI_API_KEY is not set; skipping photo estimate")
             return None
 
-        optimized = _preprocess(image_bytes)
+        if isinstance(images, (bytes, bytearray)):
+            images = [images]
+        images = list(images)[:4]
+        if not images:
+            _log.warning("no images passed to photo estimate")
+            return None
+
+        optimized = [_preprocess(image_bytes) for image_bytes in images]
 
         client = genai.Client(
             api_key=api_key,
@@ -158,12 +170,15 @@ def estimate_capacity(image_bytes: bytes):
             ),
         )
 
+        contents = [
+            types.Part.from_bytes(data=data, mime_type="image/jpeg")
+            for data in optimized
+        ]
+        contents.append(_PROMPT)
+
         response = client.models.generate_content(
             model=MODEL,
-            contents=[
-                types.Part.from_bytes(data=optimized, mime_type="image/jpeg"),
-                _PROMPT,
-            ],
+            contents=contents,
             config=types.GenerateContentConfig(**config_kwargs),
         )
 
@@ -197,11 +212,13 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO)
 
-    with open(sys.argv[1], "rb") as fh:
-        data = fh.read()
+    images = []
+    for path in sys.argv[1:]:
+        with open(path, "rb") as fh:
+            images.append(fh.read())
 
     started = time.monotonic()
-    outcome = estimate_capacity(data)
+    outcome = estimate_capacity(images)
     elapsed = time.monotonic() - started
 
     print(f"result:  {outcome}")
