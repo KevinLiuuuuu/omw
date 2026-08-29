@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ import capacity
 import confidence
 import openhours
 import routing
+import vision
 
 load_dotenv()
 ORS_API_KEY = os.environ.get("ORS_API_KEY")
@@ -594,6 +596,45 @@ def capacity_report(resource_id):
         response[f"{cat}_pct"] = blended[cat]
         response[f"{cat}_reported"] = now_iso
     return jsonify(response)
+
+
+# The vision call is bounded to 8s. Run it off the request thread so a slow or
+# hanging API call can't tie up the worker past that deadline.
+ESTIMATE_TIMEOUT_SECONDS = 8
+_vision_pool = ThreadPoolExecutor(max_workers=2)
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+
+@app.route("/api/estimate", methods=["POST"])
+def estimate():
+    """Guess per-category shelf fullness from an uploaded photo.
+
+    Body: multipart/form-data with an "image" file. Returns
+    {"perishables_pct", "non_perishables_pct", "toiletries_pct", "confidence"}
+    on success. Any failure (no key, bad image, timeout, API error) returns 503
+    with {"error": "unavailable"} -- the frontend treats that as "fall back to
+    the manual sliders" and shows nothing.
+    """
+    upload = request.files.get("image")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "no image"}), 400
+
+    image_bytes = upload.read()
+    if not image_bytes:
+        return jsonify({"error": "empty image"}), 400
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        return jsonify({"error": "image too large"}), 413
+
+    future = _vision_pool.submit(vision.estimate_capacity, image_bytes)
+    try:
+        result = future.result(timeout=ESTIMATE_TIMEOUT_SECONDS)
+    except FutureTimeoutError:
+        future.cancel()
+        return jsonify({"error": "unavailable"}), 503
+    except Exception:
+        return jsonify({"error": "unavailable"}), 503
+
+    return jsonify(result)
 
 
 init_db()
