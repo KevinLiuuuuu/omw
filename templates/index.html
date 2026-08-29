@@ -890,6 +890,7 @@ fill="currentColor" stroke="none">
       parts.push(
         `<button data-photo type="button" class="mt-3 w-full">Use a photo</button>
          <input data-photo-input type="file" accept="image/*" capture="environment" class="hidden">
+         <p data-photo-checking class="mt-2 hidden text-xs text-gray-500">Checking photo…</p>
          <p data-photo-note class="mt-2 hidden text-xs text-gray-500"></p>`
       );
       CATEGORIES.forEach(([field, label]) => {
@@ -915,9 +916,15 @@ fill="currentColor" stroke="none">
       );
       detailBody.innerHTML = parts.join("");
 
+      // Sliders the user has dragged themselves. A late photo estimate must not
+      // stomp on these.
+      const touchedSliders = new Set();
       detailBody.querySelectorAll("[data-slider]").forEach((slider) => {
         const out = detailBody.querySelector(`[data-out="${slider.dataset.slider}"]`);
-        slider.addEventListener("input", () => { out.textContent = slider.value; });
+        slider.addEventListener("input", () => {
+          out.textContent = slider.value;
+          touchedSliders.add(slider.dataset.slider);
+        });
       });
       detailBody.querySelector("[data-cancel]").addEventListener("click", () => {
         editing = false;
@@ -933,18 +940,21 @@ fill="currentColor" stroke="none">
       photoInput.addEventListener("change", () => {
         const file = photoInput.files[0];
         photoInput.value = "";
-        if (file) prefillFromPhoto(file);
+        if (file) prefillFromPhoto(file, touchedSliders);
       });
     }
 
-    // Optional: hand a photo to /api/estimate and, if it comes back confident,
-    // move the sliders to its guesses. Any failure — no key, timeout, error,
-    // low confidence — falls back silently to the manual sliders.
-    async function prefillFromPhoto(file) {
+    // Optional and non-blocking: the sliders are already open and editable. Hand
+    // the photo to /api/estimate in the background and, if it comes back
+    // confident, move the sliders the user hasn't touched yet to its guesses.
+    // Any failure — no key, timeout, error, low confidence — just drops the
+    // indicator and leaves the sliders alone.
+    async function prefillFromPhoto(file, touchedSliders) {
       const photoBtn = detailBody.querySelector("[data-photo]");
+      const checking = detailBody.querySelector("[data-photo-checking]");
       const note = detailBody.querySelector("[data-photo-note]");
       photoBtn.disabled = true;
-      photoBtn.textContent = "Reading photo…";
+      checking.classList.remove("hidden");
       note.classList.add("hidden");
       try {
         const fd = new FormData();
@@ -957,8 +967,10 @@ fill="currentColor" stroke="none">
         CATEGORIES.forEach(([field]) => {
           const value = data[`${field}_pct`];
           if (value == null) return;
+          if (touchedSliders.has(field)) return;
           const slider = detailBody.querySelector(`[data-slider="${field}"]`);
           const out = detailBody.querySelector(`[data-out="${field}"]`);
+          if (!slider) return;
           slider.value = value;
           out.textContent = String(value);
         });
@@ -968,8 +980,8 @@ fill="currentColor" stroke="none">
       } catch (e) {
         // Silent fallback: leave the sliders as they were.
       } finally {
+        checking.classList.add("hidden");
         photoBtn.disabled = false;
-        photoBtn.textContent = "Use a photo";
       }
     }
 
