@@ -47,7 +47,19 @@
       white-space: nowrap;
     }
     .pin-label::before { display: none; }
-  </style>
+
+    /* User-location ghost: bobs gently above a translucent accuracy disc. */
+    .ghost-icon { background: none; border: none; }
+    .ghost-svg {
+      display: block;
+      filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.25));
+      animation: ghost-float 3s ease-in-out infinite;
+    }
+    @keyframes ghost-float {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-4px); }
+    }
+</style>
 </head>
 <body>
   <div id="map"></div>
@@ -228,13 +240,58 @@
     // until geolocation resolves.
     let userLatLng = SYDNEY_CBD;
 
+    // The user's own position: a cartoon ghost divIcon, centred on the
+    // coordinates, over a soft circle sized to the geolocation accuracy.
+    const ghostIcon = L.divIcon({
+      className: "ghost-icon",
+      html:
+        '<svg class="ghost-svg" width="36" height="36" viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">' +
+        '<path d="M6 20a12 12 0 0 1 24 0v10q-3 4-6 0q-3 4-6 0q-3 4-6 0q-3 4-6 0Z" fill="#ffffff"/>' +
+        '<circle cx="14" cy="18" r="2.4" fill="#2b2b3a"/>' +
+        '<circle cx="22" cy="18" r="2.4" fill="#2b2b3a"/>' +
+        '</svg>',
+      iconSize: [36, 36],
+      iconAnchor: [18, 18],
+    });
+
+    let userMarker = null;
+    let accuracyCircle = null;
+
+    function showUserLocation(pos) {
+      userLatLng = [pos.coords.latitude, pos.coords.longitude];
+      const accuracy = pos.coords.accuracy;
+
+      if (accuracyCircle) {
+        accuracyCircle.setLatLng(userLatLng).setRadius(accuracy);
+      } else {
+        accuracyCircle = L.circle(userLatLng, {
+          radius: accuracy,
+          color: "#60a5fa",
+          weight: 1,
+          opacity: 0.3,
+          fillColor: "#60a5fa",
+          fillOpacity: 0.15,
+          interactive: false,
+        }).addTo(map);
+      }
+
+      if (userMarker) {
+        userMarker.setLatLng(userLatLng);
+      } else {
+        userMarker = L.marker(userLatLng, {
+          icon: ghostIcon,
+          interactive: false,
+          zIndexOffset: 1000,
+        }).addTo(map);
+      }
+
+      map.setView(userLatLng, 14);
+      renderList();
+    }
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          userLatLng = [pos.coords.latitude, pos.coords.longitude];
-          map.setView(userLatLng, 14);
-          renderList();
-        },
+        showUserLocation,
         () => map.setView(SYDNEY_CBD, 14)
       );
     }
