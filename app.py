@@ -598,10 +598,11 @@ def capacity_report(resource_id):
     return jsonify(response)
 
 
-# The vision call bounds itself to vision.TIMEOUT_MS (12s). Run it off the request
+# The vision call bounds itself to vision.TIMEOUT_MS (45s). Run it off the request
 # thread and give the outer wait a slightly longer deadline, so the wrapper never
-# cuts the thread off mid-call.
-ESTIMATE_TIMEOUT_SECONDS = 14
+# cuts the thread off mid-call. Image calls have been observed at 15-20s even with
+# a small payload and a trivial prompt.
+ESTIMATE_TIMEOUT_SECONDS = 50
 _vision_pool = ThreadPoolExecutor(max_workers=2)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
