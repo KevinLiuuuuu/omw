@@ -8,9 +8,99 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
+    /* --- Light sky-blue theme ---------------------------------------------
+       Panels sit on a very pale blue wash with soft translucency; accents,
+       buttons and the route line take a stronger sky blue; body text is a
+       deep slate blue rather than pure black. */
+    :root {
+      --omw-accent: #0284c7;                     /* buttons, splash, route */
+      --omw-accent-hover: #0369a1;
+      --omw-panel: rgba(224, 242, 254, 0.80);    /* pale blue, translucent */
+      --omw-panel-solid: #e0f2fe;
+      --omw-card: rgba(240, 249, 255, 0.72);
+      --omw-card-hover: rgba(240, 249, 255, 0.96);
+      --omw-border: rgba(2, 132, 199, 0.22);
+      --omw-text: #1e3a5f;                       /* deep slate blue */
+      --omw-text-soft: #4a6488;
+      --omw-route: #0284c7;
+    }
+
     html, body { height: 100%; margin: 0; }
     /* Map fills the whole viewport; panels float above it. */
     #map { position: fixed; inset: 0; z-index: 0; }
+
+    /* Panels + sidebar: pale blue tint, deep-slate text. */
+    #sidebar, #detail { background: var(--omw-panel); color: var(--omw-text); }
+    #sidebar .text-gray-900, #detail .text-gray-900,
+    #sidebar .text-gray-700, #detail .text-gray-700 { color: var(--omw-text); }
+    #sidebar .text-gray-500, #detail .text-gray-500,
+    #sidebar .text-gray-400, #detail .text-gray-400,
+    #detail .text-\[11px\], #detail-close { color: var(--omw-text-soft); }
+    #sidebar .border-gray-200\/70, #detail .border-gray-200\/70 {
+      border-color: var(--omw-border);
+    }
+
+    /* Search + filter inputs. */
+    #search, #filter {
+      background: rgba(255, 255, 255, 0.75);
+      border-color: var(--omw-border);
+      color: var(--omw-text);
+    }
+    #search:focus, #filter:focus { border-color: var(--omw-accent); }
+
+    /* Sidebar toggle button. */
+    #sidebar-toggle {
+      background: var(--omw-panel);
+      color: var(--omw-text);
+    }
+    #sidebar-toggle:hover { background: var(--omw-panel-solid); }
+
+    /* Sidebar list cards. */
+    #card-list > div {
+      background: var(--omw-card);
+      border-color: var(--omw-border);
+    }
+    #card-list > div:hover { background: var(--omw-card-hover); }
+
+    /* Outline buttons/links (Open in Google Maps, Cancel). */
+    #card-list [data-maps], #detail-body a,
+    #detail-body [data-cancel] {
+      border-color: var(--omw-border);
+      color: var(--omw-accent);
+    }
+
+    /* Primary actions: strong sky blue. */
+    #detail-update, #detail-body [data-submit] {
+      background: var(--omw-accent);
+      color: #fff;
+    }
+    #detail-update:hover, #detail-body [data-submit]:hover {
+      background: var(--omw-accent-hover);
+    }
+
+    /* Capacity sliders. */
+    #detail-body input[type="range"] { accent-color: var(--omw-accent); }
+
+    /* Selected card ring. */
+    #card-list > div.ring-2 { box-shadow: 0 0 0 2px var(--omw-accent); }
+
+    /* --- Splash screen --------------------------------------------------- */
+    #splash {
+      position: fixed;
+      inset: 0;
+      z-index: 3000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--omw-accent);
+      color: #fff;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-weight: 800;
+      font-size: clamp(3rem, 16vw, 9rem);
+      letter-spacing: 0.06em;
+      transition: opacity 600ms ease;
+    }
+    #splash.fade-out { opacity: 0; }
 
     /* Keep attribution to a quiet corner chip. */
     .leaflet-control-attribution {
@@ -62,6 +152,9 @@
 </style>
 </head>
 <body>
+  <!-- First-load splash: covers the viewport while the map loads behind it. -->
+  <div id="splash">OMW</div>
+
   <div id="map"></div>
 
   <!-- Sidebar toggle: always visible, sits above the sidebar. -->
@@ -96,6 +189,22 @@
   </div>
 
   <script>
+    // Splash: fade out after a beat, then drop from the DOM so it can't block
+    // clicks. The map + data load behind it, so nothing here delays them.
+    // prefers-reduced-motion: skip the animation, hide it right away.
+    (function () {
+      const splash = document.getElementById("splash");
+      if (!splash) return;
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        splash.remove();
+        return;
+      }
+      setTimeout(() => {
+        splash.classList.add("fade-out");
+        setTimeout(() => splash.remove(), 600);
+      }, 1200);
+    })();
+
     const SYDNEY_CBD = [-33.8688, 151.2093];
 
     const STATUS_COLORS = {
@@ -312,7 +421,9 @@
     const markers = {};       // resource id -> Leaflet marker, for label toggling
 
     // Walking route to the selected location, drawn as a single polyline.
-    const ROUTE_COLOR = "#2563eb";
+    const ROUTE_COLOR =
+      getComputedStyle(document.documentElement)
+        .getPropertyValue("--omw-route").trim() || "#0284c7";
     let routeLayer = null;
 
     function clearRoute() {
@@ -598,7 +709,6 @@
     function syncCardHighlight() {
       cardList.querySelectorAll("[data-key]").forEach((el) => {
         el.classList.toggle("ring-2", el.dataset.key === selectedKey);
-        el.classList.toggle("ring-gray-400", el.dataset.key === selectedKey);
       });
     }
 
