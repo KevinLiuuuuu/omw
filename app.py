@@ -286,7 +286,8 @@ def init_db():
             perishables REAL NOT NULL,
             non_perishables REAL NOT NULL,
             toiletries REAL NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            description TEXT
         )
         """
     )
@@ -444,6 +445,21 @@ def resources():
         FROM resources
         """
     ).fetchall()
+    # Newest non-empty photo description per resource, if any has ever been
+    # submitted with a capacity report. SQLite carries the bare `description`
+    # from the row holding MAX(id).
+    descriptions = {
+        r["resource_id"]: r["description"]
+        for r in get_db().execute(
+            """
+            SELECT resource_id, description, MAX(id)
+            FROM capacity_reports
+            WHERE description IS NOT NULL AND TRIM(description) != ''
+            GROUP BY resource_id
+            """
+        ).fetchall()
+    }
+
     now = datetime.now(timezone.utc)
     # is_open_now is reckoned against the current Sydney time, never UTC.
     now_local = datetime.now(SYDNEY_TZ)
@@ -474,6 +490,8 @@ def resources():
                 item["non_perishables_pct"],
                 item["toiletries_pct"],
             )
+            if item["id"] in descriptions:
+                item["description"] = descriptions[item["id"]]
         result.append(item)
     return jsonify(result)
 
@@ -526,6 +544,12 @@ def capacity_report(resource_id):
             return jsonify({"error": f"{cat} out of range"}), 400
         new_values[cat] = float(value)
 
+    description = data.get("description")
+    if isinstance(description, str):
+        description = description.strip()[:120] or None
+    else:
+        description = None
+
     db = get_db()
     row = db.execute(
         """
@@ -561,8 +585,9 @@ def capacity_report(resource_id):
     db.execute(
         """
         INSERT INTO capacity_reports
-            (resource_id, perishables, non_perishables, toiletries, created_at)
-        VALUES (?, ?, ?, ?, ?)
+            (resource_id, perishables, non_perishables, toiletries, created_at,
+             description)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             resource_id,
@@ -570,6 +595,7 @@ def capacity_report(resource_id):
             new_values["non_perishables"],
             new_values["toiletries"],
             now_iso,
+            description,
         ),
     )
     db.execute(

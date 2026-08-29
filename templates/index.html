@@ -857,6 +857,11 @@ fill="currentColor" stroke="none">
              ${overallAgo ? `<p class="omw-sub mt-1">updated ${overallAgo}</p>` : ""}
            </div>`
         );
+        if (res.description) {
+          parts.push(
+            `<p class="omw-sub mt-2">${escapeHtml(res.description)}</p>`
+          );
+        }
         CATEGORIES.forEach(([field, label]) => {
           const pct = res[`${field}_pct`];
           const ago = timeAgo(res[`${field}_reported`]);
@@ -931,6 +936,11 @@ fill="currentColor" stroke="none">
       );
       detailBody.innerHTML = parts.join("");
 
+      // Description from a photo estimate, if the user ever ran one. Sent with
+      // the update so it can be stored on the report; left null (nothing sent)
+      // when no photo was used.
+      const photoState = { description: null };
+
       // Sliders the user has dragged themselves. A late photo estimate must not
       // stomp on these.
       const touchedSliders = new Set();
@@ -947,7 +957,7 @@ fill="currentColor" stroke="none">
       });
       detailBody
         .querySelector("[data-submit]")
-        .addEventListener("click", () => submitUpdate(res));
+        .addEventListener("click", () => submitUpdate(res, photoState));
 
       const photoBtn = detailBody.querySelector("[data-photo]");
       const photoInput = detailBody.querySelector("[data-photo-input]");
@@ -955,7 +965,7 @@ fill="currentColor" stroke="none">
       photoInput.addEventListener("change", () => {
         const files = Array.from(photoInput.files);
         photoInput.value = "";
-        if (files.length) prefillFromPhoto(files, touchedSliders);
+        if (files.length) prefillFromPhoto(files, touchedSliders, photoState);
       });
     }
 
@@ -964,7 +974,7 @@ fill="currentColor" stroke="none">
     // usable estimate, move the sliders the user hasn't touched yet to its
     // guesses. Any failure — no key, timeout, error, unparseable body — just
     // drops the indicator and leaves the sliders alone.
-    async function prefillFromPhoto(files, touchedSliders) {
+    async function prefillFromPhoto(files, touchedSliders, photoState) {
       const photoBtn = detailBody.querySelector("[data-photo]");
       const checking = detailBody.querySelector("[data-photo-checking]");
       const checkingLabel = detailBody.querySelector("[data-photo-checking-label]");
@@ -993,6 +1003,7 @@ fill="currentColor" stroke="none">
         const data = await resp.json();
 
         if (typeof data.description === "string" && data.description.trim()) {
+          photoState.description = data.description.trim();
           const lead = n === 1 ? "Photo shows" : "Photos show";
           desc.textContent = `${lead}: ${data.description.trim()}`;
           desc.classList.remove("hidden");
@@ -1031,13 +1042,16 @@ fill="currentColor" stroke="none">
       }
     }
 
-    async function submitUpdate(res) {
+    async function submitUpdate(res, photoState) {
       const submitBtn = detailBody.querySelector("[data-submit]");
       const errEl = detailBody.querySelector("[data-form-error]");
       const payload = {};
       detailBody.querySelectorAll("[data-slider]").forEach((s) => {
         payload[s.dataset.slider] = Number(s.value);
       });
+      if (photoState && photoState.description) {
+        payload.description = photoState.description;
+      }
 
       submitBtn.disabled = true;
       submitBtn.textContent = "Saving…";
