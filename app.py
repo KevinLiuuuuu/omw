@@ -12,41 +12,13 @@ import openhours
 
 DB_PATH = Path(__file__).parent / "omw.db"
 
-# Opening hours and is_open_now are reckoned in the resources' local time.
+# Every opening hour in the seed is an Australia/Sydney wall-clock time. The
+# /api/resources handler compares them against the current Sydney time, never
+# UTC, so is_open_now reflects what a person standing in Sydney would see.
 SYDNEY_TZ = ZoneInfo("Australia/Sydney")
 
-SEED_RESOURCES = [
-    ("Wayside Chapel Shelter", "shelter", -33.8769, 151.2223),
-    ("Matthew Talbot Hostel", "shelter", -33.8710, 151.2170),
-    ("St Vincent's Night Refuge", "shelter", -33.8794, 151.2160),
-    ("OzHarvest Market Pantry", "pantry", -33.8850, 151.1990),
-    ("Redfern Community Pantry", "pantry", -33.8930, 151.2040),
-    ("Foodbank City Pop-up", "pantry", -33.8790, 151.2050),
-    ("Town Hall Square Free WiFi", "wifi", -33.8731, 151.2065),
-    ("Customs House Library WiFi", "wifi", -33.8614, 151.2100),
-]
-
-# Initial status reports for the seeded resources, so the map shows a mix of
-# colours out of the box. name -> (status, minutes since last report).
-SEED_STATUS = {
-    "Wayside Chapel Shelter": ("available", 20),
-    "Matthew Talbot Hostel": ("available", 95),
-    "St Vincent's Night Refuge": ("unavailable", 40),
-    "OzHarvest Market Pantry": ("available", 8),
-    "Redfern Community Pantry": ("unknown", None),
-    "Foodbank City Pop-up": ("unavailable", 180),
-    "Town Hall Square Free WiFi": ("available", 5),
-    "Customs House Library WiFi": ("unknown", None),
-}
-
-# Eight inner-Sydney food banks, seeded alongside SEED_RESOURCES (all kind
-# "pantry"). Each carries opening hours for every weekday (a list of [open,
-# close] "HH:MM" pairs; an empty list means closed that day), two facility
-# flags, and a starting fill level per stock category as (percent,
-# minutes_since_reported) - turned into a timestamp at seed time. The category
-# ages are staggered across the last few hours so confidence differs between
-# categories and between food banks.
 _MON_FRI = ("mon", "tue", "wed", "thu", "fri")
+_ALL_DAYS = _MON_FRI + ("sat", "sun")
 
 
 def _hours(weekday, sat, sun):
@@ -59,6 +31,63 @@ def _hours(weekday, sat, sun):
     return days
 
 
+def _every_day(intervals):
+    """Opening hours identical on all seven days."""
+    return {day: [pair[:] for pair in intervals] for day in _ALL_DAYS}
+
+
+# Round-the-clock crisis services and always-on public wifi.
+_ALWAYS_OPEN = _every_day([["00:00", "24:00"]])
+
+# Shelters and free-wifi points. Food banks are seeded separately, below. Every
+# entry carries a full week of Sydney-local opening hours and an initial status
+# report as (status, minutes_since_reported) so the map shows a mix of colours
+# out of the box; free-wifi points have hours and a status only - no food
+# capacity or facility fields.
+SEED_RESOURCES = [
+    {
+        "name": "Wayside Chapel Shelter", "kind": "shelter",
+        "lat": -33.8769, "lng": 151.2223,
+        "hours": _ALWAYS_OPEN, "free_wifi": True, "bathroom": True,
+        "status": ("available", 20),
+    },
+    {
+        "name": "Matthew Talbot Hostel", "kind": "shelter",
+        "lat": -33.8710, "lng": 151.2170,
+        "hours": _ALWAYS_OPEN, "free_wifi": False, "bathroom": True,
+        "status": ("available", 95),
+    },
+    {
+        "name": "St Vincent's Night Refuge", "kind": "shelter",
+        "lat": -33.8794, "lng": 151.2160,
+        "hours": _every_day([["00:00", "09:00"], ["17:00", "24:00"]]),
+        "free_wifi": False, "bathroom": True,
+        "status": ("unavailable", 40),
+    },
+    {
+        "name": "Town Hall Square Free WiFi", "kind": "wifi",
+        "lat": -33.8731, "lng": 151.2065,
+        "hours": _ALWAYS_OPEN,
+        "status": ("available", 5),
+    },
+    {
+        "name": "Customs House Library WiFi", "kind": "wifi",
+        "lat": -33.8614, "lng": 151.2100,
+        "hours": _hours(
+            [["10:00", "19:00"]], [["11:00", "16:00"]], [["11:00", "16:00"]]
+        ),
+        "status": ("unknown", None),
+    },
+]
+
+# Inner-Sydney food banks, all kind "pantry". Each carries opening hours for
+# every weekday (a list of [open, close] "HH:MM" pairs; an empty list means
+# closed that day), two facility flags, and a starting fill level per stock
+# category as (percent, minutes_since_reported) - turned into a timestamp at
+# seed time. The category ages are staggered across the last few hours so
+# confidence differs between categories and between food banks. An optional
+# "status" as (status, minutes_since_reported) seeds a colour on the map;
+# without it the pantry starts "unknown".
 SEED_FOODBANKS = [
     {
         "name": "OzHarvest Waterloo",
@@ -149,6 +178,41 @@ SEED_FOODBANKS = [
         "non_perishables": (88, 65),
         "toiletries": (72, 50),
     },
+    {
+        "name": "OzHarvest Market Pantry",
+        "lat": -33.8850, "lng": 151.1990,
+        "hours": _hours(
+            [["10:00", "16:00"]], [["10:00", "15:00"]], []
+        ),
+        "free_wifi": True, "bathroom": True,
+        "perishables": (52, 30),
+        "non_perishables": (70, 180),
+        "toiletries": (58, 120),
+        "status": ("available", 8),
+    },
+    {
+        "name": "Redfern Community Pantry",
+        "lat": -33.8930, "lng": 151.2040,
+        "hours": _hours(
+            [["09:00", "13:00"]], [["09:00", "13:00"]], []
+        ),
+        "free_wifi": False, "bathroom": True,
+        "perishables": (38, 150),
+        "non_perishables": (64, 240),
+        "toiletries": (41, 90),
+    },
+    {
+        "name": "Foodbank City Pop-up",
+        "lat": -33.8790, "lng": 151.2050,
+        "hours": _hours(
+            [["11:00", "18:00"]], [["11:00", "17:00"]], [["12:00", "16:00"]]
+        ),
+        "free_wifi": True, "bathroom": False,
+        "perishables": (44, 45),
+        "non_perishables": (58, 200),
+        "toiletries": (36, 160),
+        "status": ("unavailable", 180),
+    },
 ]
 
 app = Flask(__name__)
@@ -226,18 +290,32 @@ def init_db():
         if col not in columns:
             db.execute(f"ALTER TABLE resources ADD COLUMN {col} {decl}")
 
+    now = datetime.now(timezone.utc)
+
     count = db.execute("SELECT COUNT(*) FROM resources").fetchone()[0]
     if count == 0:
         db.executemany(
-            "INSERT INTO resources (name, kind, lat, lng) VALUES (?, ?, ?, ?)",
-            SEED_RESOURCES,
+            """
+            INSERT INTO resources (name, kind, lat, lng, hours, free_wifi, bathroom)
+            VALUES (:name, :kind, :lat, :lng, :hours, :free_wifi, :bathroom)
+            """,
+            [
+                {
+                    "name": r["name"], "kind": r["kind"],
+                    "lat": r["lat"], "lng": r["lng"],
+                    "hours": json.dumps(r["hours"]),
+                    "free_wifi": int(r.get("free_wifi", False)),
+                    "bathroom": int(r.get("bathroom", False)),
+                }
+                for r in SEED_RESOURCES
+            ],
         )
 
     # Give any resource that has never had a report an initial status.
-    now = datetime.now(timezone.utc)
-    for name, (status, minutes_ago) in SEED_STATUS.items():
+    for res in SEED_RESOURCES:
+        status, minutes_ago = res["status"]
         row = db.execute(
-            "SELECT id, last_report FROM resources WHERE name = ?", (name,)
+            "SELECT id, last_report FROM resources WHERE name = ?", (res["name"],)
         ).fetchone()
         if row is None or row[1] is not None:
             continue
@@ -263,17 +341,24 @@ def init_db():
             cat: (now - timedelta(minutes=fb[cat][1])).isoformat()
             for cat in ("perishables", "non_perishables", "toiletries")
         }
+        status, status_minutes = fb.get("status", ("unknown", None))
+        last_report = (
+            None
+            if status_minutes is None
+            else (now - timedelta(minutes=status_minutes)).isoformat()
+        )
         db.execute(
             """
             INSERT INTO resources (
-                name, kind, lat, lng, hours, free_wifi, bathroom,
+                name, kind, lat, lng, status, last_report,
+                hours, free_wifi, bathroom,
                 perishables_pct, perishables_reported,
                 non_perishables_pct, non_perishables_reported,
                 toiletries_pct, toiletries_reported
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                fb["name"], "pantry", fb["lat"], fb["lng"],
+                fb["name"], "pantry", fb["lat"], fb["lng"], status, last_report,
                 json.dumps(fb["hours"]),
                 int(fb["free_wifi"]), int(fb["bathroom"]),
                 pct["perishables"], reported["perishables"],
@@ -319,6 +404,7 @@ def resources():
         """
     ).fetchall()
     now = datetime.now(timezone.utc)
+    # is_open_now is reckoned against the current Sydney time, never UTC.
     now_local = datetime.now(SYDNEY_TZ)
     result = []
     for row in rows:
@@ -327,14 +413,26 @@ def resources():
             item["kind"], item["status"], item["last_report"], now
         )
         item["hours"] = json.loads(item["hours"]) if item["hours"] else None
-        item["free_wifi"] = bool(item["free_wifi"])
-        item["bathroom"] = bool(item["bathroom"])
-        item["overall_capacity"] = capacity.overall_capacity(
-            item["perishables_pct"],
-            item["non_perishables_pct"],
-            item["toiletries_pct"],
-        )
         item["is_open_now"] = openhours.is_open(item["hours"], now_local)
+
+        if item["kind"] == "wifi":
+            # Free-wifi points have their own shape: hours and a status only, no
+            # food-capacity or facility fields.
+            for key in (
+                "free_wifi", "bathroom",
+                "perishables_pct", "perishables_reported",
+                "non_perishables_pct", "non_perishables_reported",
+                "toiletries_pct", "toiletries_reported",
+            ):
+                item.pop(key, None)
+        else:
+            item["free_wifi"] = bool(item["free_wifi"])
+            item["bathroom"] = bool(item["bathroom"])
+            item["overall_capacity"] = capacity.overall_capacity(
+                item["perishables_pct"],
+                item["non_perishables_pct"],
+                item["toiletries_pct"],
+            )
         result.append(item)
     return jsonify(result)
 
