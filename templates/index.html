@@ -41,14 +41,10 @@
 
   <!-- Detail panel: hidden until a location is selected. -->
   <div id="detail"
-       class="hidden fixed right-4 top-4 z-[1000] w-80 rounded-lg bg-white/80 p-4 shadow-lg backdrop-blur">
+       class="hidden fixed right-4 top-4 z-[1000] flex max-h-[calc(100vh-2rem)] w-80 flex-col overflow-y-auto rounded-lg bg-white/80 p-4 shadow-lg backdrop-blur">
     <button id="detail-close"
             class="absolute right-3 top-2 text-xl leading-none text-gray-400 hover:text-gray-600">&times;</button>
-    <h2 class="pr-4 font-semibold text-gray-900">Location detail</h2>
-    <p class="mt-1 text-sm text-gray-500">
-      Placeholder &mdash; details for the selected location will appear here.
-    </p>
-    <p id="detail-ref" class="mt-3 text-xs text-gray-400"></p>
+    <div id="detail-body"></div>
   </div>
 
   <script>
@@ -194,29 +190,222 @@
 
     // --- Selection + detail panel --------------------------------------
     const detail = document.getElementById("detail");
-    const detailRef = document.getElementById("detail-ref");
-    let selectedKey = null;
+    const detailBody = document.getElementById("detail-body");
+    let selectedKey = null;   // "res-<id>" of the open location, or null
+    let editing = false;      // detail panel is showing the update-info sliders
+
+    const CATEGORIES = [
+      ["perishables", "Perishables"],
+      ["non_perishables", "Non-perishables"],
+      ["toiletries", "Toiletries"],
+    ];
 
     function closeDetail() {
       selectedKey = null;
+      editing = false;
       detail.classList.add("hidden");
       syncCardHighlight();
     }
 
+    // The live allResources entry for the open location (not a stale copy), so
+    // re-renders after an update see the patched numbers.
+    function selectedResource() {
+      if (!selectedKey) return null;
+      const id = Number(selectedKey.slice(4));
+      return allResources.find((r) => r.id === id) || null;
+    }
+
     // Selecting a new location opens the panel; selecting the current one
     // again dismisses it.
-    function selectLocation(key, label) {
+    function selectLocation(res) {
+      const key = `res-${res.id}`;
       if (selectedKey === key) {
         closeDetail();
         return;
       }
       selectedKey = key;
-      detailRef.textContent = label ? `Selected: ${label}` : "";
+      editing = false;
       detail.classList.remove("hidden");
+      detail.scrollTop = 0;
+      renderDetail();
       syncCardHighlight();
     }
 
     document.getElementById("detail-close").addEventListener("click", closeDetail);
+
+    // Most recent of a pantry's three category report times, for the overall
+    // "updated N ago" line. ISO strings sort chronologically.
+    function freshestReport(res) {
+      const times = CATEGORIES
+        .map(([field]) => res[`${field}_reported`])
+        .filter(Boolean)
+        .sort();
+      return times.length ? times[times.length - 1] : null;
+    }
+
+    // Fill-bar colour: green when well stocked, amber low, red nearly out.
+    function barColor(pct) {
+      if (pct >= 60) return "bg-green-500";
+      if (pct >= 30) return "bg-amber-500";
+      return "bg-red-500";
+    }
+
+    function renderDetail() {
+      const res = selectedResource();
+      if (!res) return closeDetail();
+      if (editing) return renderUpdateForm(res);
+
+      const km = haversineKm(userLatLng, [res.lat, res.lng]);
+      const status = openStatus(res);
+      const parts = [];
+
+      parts.push(
+        `<h2 class="pr-6 text-base font-semibold text-gray-900">${escapeHtml(res.name)}</h2>`
+      );
+      parts.push(
+        `<p class="mt-1 text-sm font-medium ${
+          status.open ? "text-green-600" : "text-gray-500"
+        }">${status.text}</p>`
+      );
+      parts.push(`<p class="mt-1 text-xs text-gray-500">${walkPhrase(km)}</p>`);
+      parts.push(
+        `<a href="${mapsUrl(res)}" target="_blank" rel="noopener"
+            class="mt-2 inline-block rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50">
+           Open in Google Maps
+         </a>`
+      );
+
+      if (res.kind === "pantry") {
+        const overallAgo = timeAgo(freshestReport(res));
+        const overall =
+          res.overall_capacity == null
+            ? "No capacity reports yet"
+            : `${Math.round(res.overall_capacity)}% overall capacity`;
+        parts.push(
+          `<div class="mt-3 border-t border-gray-200/70 pt-3">
+             <p class="text-sm font-medium text-gray-900">${overall}</p>
+             ${overallAgo ? `<p class="text-xs text-gray-500">updated ${overallAgo}</p>` : ""}
+           </div>`
+        );
+        CATEGORIES.forEach(([field, label]) => {
+          const pct = res[`${field}_pct`];
+          const ago = timeAgo(res[`${field}_reported`]);
+          const width = pct == null ? 0 : Math.round(pct);
+          parts.push(
+            `<div class="mt-3">
+               <div class="flex items-baseline justify-between text-xs">
+                 <span class="font-medium text-gray-700">${label}</span>
+                 <span class="text-gray-500">${pct == null ? "&mdash;" : width + "%"}</span>
+               </div>
+               <div class="mt-1 h-2 w-full overflow-hidden rounded-full bg-gray-200">
+                 <div class="h-full ${barColor(width)}" style="width:${width}%"></div>
+               </div>
+               <p class="mt-0.5 text-[11px] text-gray-400">${
+                 ago ? `updated ${ago}` : "never updated"
+               }</p>
+             </div>`
+          );
+        });
+        parts.push(
+          `<button id="detail-update"
+                   class="mt-4 w-full rounded-md bg-gray-800 px-3 py-2 text-sm font-medium text-white hover:bg-gray-700">
+             Update info
+           </button>`
+        );
+      }
+
+      detailBody.innerHTML = parts.join("");
+      const updateBtn = document.getElementById("detail-update");
+      if (updateBtn) {
+        updateBtn.addEventListener("click", () => {
+          editing = true;
+          renderDetail();
+        });
+      }
+    }
+
+    // The update-info view: one slider per category, each starting at the
+    // current estimate.
+    function renderUpdateForm(res) {
+      const parts = [];
+      parts.push(
+        `<h2 class="pr-6 text-base font-semibold text-gray-900">Update ${escapeHtml(res.name)}</h2>`
+      );
+      parts.push(
+        `<p class="mt-1 text-xs text-gray-500">Set each slider to how full it is right now.</p>`
+      );
+      CATEGORIES.forEach(([field, label]) => {
+        const current = res[`${field}_pct`];
+        const start = current == null ? 50 : Math.round(current);
+        parts.push(
+          `<div class="mt-4">
+             <div class="flex items-baseline justify-between text-xs">
+               <span class="font-medium text-gray-700">${label}</span>
+               <span class="text-gray-500"><span data-out="${field}">${start}</span>%</span>
+             </div>
+             <input type="range" min="0" max="100" value="${start}" data-slider="${field}"
+                    class="mt-1 w-full accent-gray-800">
+           </div>`
+        );
+      });
+      parts.push(`<p data-form-error class="mt-3 hidden text-xs text-red-600"></p>`);
+      parts.push(
+        `<div class="mt-4 flex gap-2">
+           <button data-cancel
+                   class="flex-1 rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+             Cancel
+           </button>
+           <button data-submit
+                   class="flex-1 rounded-md bg-gray-800 px-3 py-2 text-sm font-medium text-white hover:bg-gray-700">
+             Submit
+           </button>
+         </div>`
+      );
+      detailBody.innerHTML = parts.join("");
+
+      detailBody.querySelectorAll("[data-slider]").forEach((slider) => {
+        const out = detailBody.querySelector(`[data-out="${slider.dataset.slider}"]`);
+        slider.addEventListener("input", () => { out.textContent = slider.value; });
+      });
+      detailBody.querySelector("[data-cancel]").addEventListener("click", () => {
+        editing = false;
+        renderDetail();
+      });
+      detailBody
+        .querySelector("[data-submit]")
+        .addEventListener("click", () => submitUpdate(res));
+    }
+
+    async function submitUpdate(res) {
+      const submitBtn = detailBody.querySelector("[data-submit]");
+      const errEl = detailBody.querySelector("[data-form-error]");
+      const payload = {};
+      detailBody.querySelectorAll("[data-slider]").forEach((s) => {
+        payload[s.dataset.slider] = Number(s.value);
+      });
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Saving…";
+      errEl.classList.add("hidden");
+      try {
+        const resp = await fetch(`/api/resources/${res.id}/capacity`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        // Patch the shared allResources entry so every view updates at once.
+        Object.assign(res, await resp.json());
+        editing = false;
+        renderDetail();
+        renderList();
+      } catch (e) {
+        errEl.textContent = "Could not save that update. Try again.";
+        errEl.classList.remove("hidden");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Submit";
+      }
+    }
 
     function syncCardHighlight() {
       cardList.querySelectorAll("[data-key]").forEach((el) => {
@@ -280,7 +469,7 @@
           return;
         }
         map.panTo([res.lat, res.lng]);
-        selectLocation(key, res.name);
+        selectLocation(res);
       });
       return card;
     }
@@ -317,7 +506,7 @@
             fillColor: markerColor(res),
             fillOpacity: markerOpacity(res),
           }).addTo(map);
-          marker.on("click", () => selectLocation(`res-${res.id}`, res.name));
+          marker.on("click", () => selectLocation(res));
         });
         renderList();
       });
