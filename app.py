@@ -40,87 +40,114 @@ SEED_STATUS = {
 }
 
 # Eight inner-Sydney food banks, seeded alongside SEED_RESOURCES (all kind
-# "pantry"). Each carries opening hours (per weekday, a list of [open, close]
-# "HH:MM" pairs; a missing day means closed), two facility flags, and a starting
-# fill level per stock category as (percent, minutes_since_reported) - turned
-# into a timestamp at seed time.
+# "pantry"). Each carries opening hours for every weekday (a list of [open,
+# close] "HH:MM" pairs; an empty list means closed that day), two facility
+# flags, and a starting fill level per stock category as (percent,
+# minutes_since_reported) - turned into a timestamp at seed time. The category
+# ages are staggered across the last few hours so confidence differs between
+# categories and between food banks.
 _MON_FRI = ("mon", "tue", "wed", "thu", "fri")
+
+
+def _hours(weekday, sat, sun):
+    """Build a 7-day opening-hours dict from Mon-Fri hours plus explicit
+    Saturday and Sunday hours. Each argument is a list of ["HH:MM", "HH:MM"]
+    open/close pairs (an empty list means closed that day)."""
+    days = {day: [pair[:] for pair in weekday] for day in _MON_FRI}
+    days["sat"] = [pair[:] for pair in sat]
+    days["sun"] = [pair[:] for pair in sun]
+    return days
+
 
 SEED_FOODBANKS = [
     {
         "name": "OzHarvest Waterloo",
         "lat": -33.9018, "lng": 151.2050,
-        "hours": {d: [["09:00", "15:00"]] for d in _MON_FRI},
+        "hours": _hours(
+            [["09:00", "15:00"]], [["09:00", "12:00"]], [["10:00", "13:00"]]
+        ),
         "free_wifi": True, "bathroom": True,
-        "perishables": (48, 25),
-        "non_perishables": (74, 200),
-        "toiletries": (60, 120),
+        "perishables": (45, 20),
+        "non_perishables": (78, 210),
+        "toiletries": (62, 95),
     },
     {
         "name": "Addison Road Food Pantry",
         "lat": -33.9098, "lng": 151.1585,
-        "hours": {"wed": [["10:00", "13:00"]], "sat": [["10:00", "13:00"]]},
+        "hours": _hours(
+            [["10:00", "13:00"]], [["08:00", "13:00"]], [["10:00", "13:00"]]
+        ),
         "free_wifi": False, "bathroom": True,
-        "perishables": (35, 60),
-        "non_perishables": (58, 600),
-        "toiletries": (40, 300),
+        "perishables": (33, 140),
+        "non_perishables": (60, 270),
+        "toiletries": (44, 175),
     },
     {
         "name": "Exodus Foundation Loaves & Fishes",
         "lat": -33.8885, "lng": 151.1250,
-        "hours": {d: [["08:00", "11:30"], ["12:00", "14:00"]] for d in _MON_FRI},
+        "hours": _hours(
+            [["08:00", "11:30"], ["12:00", "14:00"]],
+            [["08:00", "11:00"]], [["08:00", "11:00"]],
+        ),
         "free_wifi": False, "bathroom": True,
-        "perishables": (55, 15),
-        "non_perishables": (80, 90),
-        "toiletries": (65, 240),
+        "perishables": (57, 15),
+        "non_perishables": (82, 130),
+        "toiletries": (66, 240),
     },
     {
         "name": "Vinnies Woolloomooloo Pantry",
         "lat": -33.8703, "lng": 151.2192,
-        "hours": {d: [["09:30", "13:00"]] for d in ("mon", "tue", "thu", "fri")},
+        "hours": _hours(
+            [["09:30", "13:00"]], [["09:30", "12:00"]], [["10:00", "12:00"]]
+        ),
         "free_wifi": True, "bathroom": True,
-        "perishables": (42, 45),
-        "non_perishables": (66, 420),
-        "toiletries": (30, 1200),
+        "perishables": (40, 55),
+        "non_perishables": (68, 190),
+        "toiletries": (28, 300),
     },
     {
         "name": "Salvos Streetlevel Surry Hills",
         "lat": -33.8860, "lng": 151.2110,
-        "hours": {d: [["10:00", "16:00"]] for d in _MON_FRI},
+        "hours": _hours(
+            [["10:00", "16:00"]], [["10:00", "14:00"]], [["12:00", "15:00"]]
+        ),
         "free_wifi": True, "bathroom": True,
-        "perishables": (38, 35),
-        "non_perishables": (70, 180),
-        "toiletries": (52, 150),
+        "perishables": (36, 40),
+        "non_perishables": (72, 165),
+        "toiletries": (50, 110),
     },
     {
         "name": "Newtown Neighbourhood Centre Food Hub",
         "lat": -33.8975, "lng": 151.1795,
-        "hours": {"tue": [["11:00", "14:00"]], "thu": [["11:00", "14:00"]]},
+        "hours": _hours(
+            [["11:00", "14:00"]], [["10:00", "13:00"]], [["10:00", "13:00"]]
+        ),
         "free_wifi": True, "bathroom": False,
-        "perishables": (30, 75),
-        "non_perishables": (55, 900),
-        "toiletries": (25, 540),
+        "perishables": (29, 80),
+        "non_perishables": (53, 250),
+        "toiletries": (24, 200),
     },
     {
         "name": "The Factory Community Pantry",
         "lat": -33.9055, "lng": 151.2085,
-        "hours": {d: [["09:00", "12:00"]] for d in ("mon", "tue", "thu", "fri")},
+        "hours": _hours(
+            [["09:00", "12:00"]], [["09:00", "12:00"]], [["09:00", "12:00"]]
+        ),
         "free_wifi": False, "bathroom": True,
-        "perishables": (50, 20),
-        "non_perishables": (62, 360),
-        "toiletries": (48, 200),
+        "perishables": (49, 25),
+        "non_perishables": (63, 155),
+        "toiletries": (47, 130),
     },
     {
         "name": "Kings Cross Community Pantry",
         "lat": -33.8740, "lng": 151.2235,
-        "hours": {
-            d: [["08:00", "13:00"]]
-            for d in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
-        },
+        "hours": _hours(
+            [["08:00", "13:00"]], [["08:00", "13:00"]], [["08:00", "13:00"]]
+        ),
         "free_wifi": True, "bathroom": True,
-        "perishables": (58, 10),
-        "non_perishables": (85, 60),
-        "toiletries": (70, 45),
+        "perishables": (61, 10),
+        "non_perishables": (88, 65),
+        "toiletries": (72, 50),
     },
 ]
 
