@@ -189,9 +189,7 @@ SEED_FOODBANKS = [
     {
         "name": "OzHarvest Market Pantry",
         "lat": -33.8850, "lng": 151.1990,
-        "hours": _hours(
-            [["10:00", "16:00"]], [["10:00", "15:00"]], []
-        ),
+        "hours": _every_day([["08:00", "20:00"]]),
         "free_wifi": True, "bathroom": True,
         "perishables": (52, 30),
         "non_perishables": (70, 180),
@@ -201,13 +199,12 @@ SEED_FOODBANKS = [
     {
         "name": "Redfern Community Pantry",
         "lat": -33.8930, "lng": 151.2040,
-        "hours": _hours(
-            [["09:00", "13:00"]], [["09:00", "13:00"]], []
-        ),
+        "hours": _every_day([["08:00", "20:00"]]),
         "free_wifi": False, "bathroom": True,
         "perishables": (38, 150),
         "non_perishables": (64, 240),
         "toiletries": (41, 90),
+        "status": ("available", 12),
     },
     {
         "name": "Foodbank City Pop-up",
